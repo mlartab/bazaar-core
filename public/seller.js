@@ -72,10 +72,34 @@ function expiresIn(d) {
   return s >= 60 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${s}s`;
 }
 
+async function renderProfile(me) {
+  // Public face, straight from the Trust Passport: exactly what a buyer
+  // sees. Silent on failure — deals below must load even if the replica
+  // is down (the endpoint falls back to SQLite itself).
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(me.id)}/profile`);
+    if (!res.ok) return;
+    const { result } = await res.json();
+    if (result === undefined) return;
+    $("profile-title").textContent = result.title ?? me.id;
+    $("profile-id").textContent = me.id;
+    $("profile-desc").textContent = result.description ?? "No description yet.";
+    const price = Number.isInteger(result.price) ? `${result.price} CR` : "Unpriced";
+    const category = typeof result.category === "string" && result.category !== "" ? result.category : "Uncategorized";
+    $("profile-meta").innerHTML =
+      `<span class="pill" data-price="${result.price ?? ""}">${esc(price)}</span>` +
+      `<span class="pill active" data-category="${esc(category)}">${esc(category)}</span>`;
+    $("profile-head").dataset.agentId = me.id;
+  } catch {
+    // Offline replica: header keeps its placeholders, deals still load.
+  }
+}
+
 async function load() {
   const me = identity();
   if (me === null) return;
   $("seller-name").textContent = `— ${me.id}`;
+  renderProfile(me).catch(() => {});
   const { result } = await api("/api/deals");
   const mine = result.deals.filter((d) => d.seller === me.id);
   if (result.deals.length > 0 && mine.length === 0) {

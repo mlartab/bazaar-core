@@ -1,6 +1,6 @@
-// Founder's Control Station: polls GET /api/admin/dashboard every 2
-// seconds for metrics, deals, and traffic, plus the agent directory and
-// audit log. Reads are keyless except the admin subtree, which needs the
+// Founder's Control Station: live SSE deal events plus a debounced
+// dashboard refresh for metrics, deals, and traffic, plus the agent
+// directory and audit log. A slow poll backs up the stream. Reads are keyless except the admin subtree, which needs the
 // Bearer secret. Only moderation POSTs, each with a fresh Idempotency-Key.
 
 const $ = (id) => document.getElementById(id);
@@ -10,6 +10,50 @@ let timer = null;
 let scrollPaused = false;
 let clearedBefore = 0;
 let logQuery = "";
+let stream = null;
+let streamLive = false;
+let refreshQueued = false;
+
+// Debounced full refresh after a live event: the stream carries deal
+// events, not traffic rows or totals, so one dashboard round trip (at most
+// one per 500 ms) recomputes everything the tick body renders.
+function queueRefresh() {
+  if (refreshQueued || paused) return;
+  refreshQueued = true;
+  setTimeout(() => {
+    refreshQueued = false;
+    tick();
+  }, 500);
+}
+
+function setMode(live) {
+  streamLive = live;
+  const text = $("net-text");
+  if (text === null) return;
+  text.dataset.mode = live ? "live" : "poll";
+}
+
+function connectStream() {
+  if (typeof EventSource === "undefined" || !secret()) return;
+  try {
+    stream = new EventSource(`/api/admin/events/stream?token=${encodeURIComponent(secret())}`);
+  } catch {
+    return;
+  }
+  stream.onopen = () => setMode(true);
+  stream.onmessage = () => queueRefresh();
+  stream.onerror = () => {
+    // Automatic fallback: close the broken stream and poll every 2 s
+    // until the next successful tick reopens the stream.
+    try { stream.close(); } catch { /* already closed */ }
+    stream = null;
+    setMode(false);
+    if (!paused) {
+      if (timer !== null) clearInterval(timer);
+      timer = setInterval(tick, 2000);
+    }
+  };
+}
 
 const secret = () => localStorage.getItem(SECRET_KEY) ?? "";
 
@@ -145,7 +189,14 @@ async function tick() {
     $("m-settled").textContent = stats.settled;
     $("m-rejected").textContent = stats.rejected;
     $("net-dot").classList.remove("down");
-    $("net-text").textContent = "Network Live";
+    $("net-text").textContent = dash.result.demoSafe === true ? "Network Live · DEMO SAFE" : "Network Live";
+    // A recovered transport rejoins the live stream and drops back to the
+    // slow backup cadence.
+    if (stream === null && !paused) {
+      connectStream();
+      if (timer !== null) clearInterval(timer);
+      timer = setInterval(tick, 30000);
+    }
 
     const q = logQuery.trim().toLowerCase();
     const visible = logs
@@ -215,14 +266,78 @@ async function showDeal(id) {
   }
 }
 
+const CATEGORIES = ["image_gen", "video_gen", "data", "text_gen", "speech"];
+
 function agentActions(a) {
   // Buttons mirror the lifecycle table: only legal transitions are offered,
-  // so the UI cannot propose what the server would reject.
+  // so the UI cannot propose what the server would reject. Edit and Delete
+  // ride on every row regardless of status.
   const btn = (verb, label, cls) => `<button class="${cls}" data-id="${esc(a.id)}" data-verb="${verb}">${label}</button>`;
-  if (a.status === "PENDING") return `${btn("approve", "Approve", "approve")} ${btn("reject", "Reject", "reject")}`;
-  if (a.status === "ACTIVE") return `${btn("suspend", "Suspend", "suspend")} ${btn("retire", "Retire", "retire")}`;
-  if (a.status === "SUSPENDED") return btn("approve", "Approve", "approve");
-  return "—";
+  const edit = `<button class="tab" data-edit="${esc(a.id)}">Edit</button>`;
+  const del = `<button class="reject" data-delete="${esc(a.id)}">Delete</button>`;
+  if (a.status === "PENDING") return `${btn("approve", "Approve", "approve")} ${btn("reject", "Reject", "reject")} ${edit} ${del}`;
+  if (a.status === "ACTIVE") return `${btn("suspend", "Suspend", "suspend")} ${btn("retire", "Retire", "retire")} ${edit} ${del}`;
+  if (a.status === "SUSPENDED") return `${btn("approve", "Approve", "approve")} ${edit} ${del}`;
+  return `${edit} ${del}`;
+}
+
+async function askEdit(id) {
+  // Prompt-based edit matching the admin console's plain idiom: empty input
+  // keeps the current value, and an all-empty submit is a no-op.
+  const title = prompt(`Title for ${id} (empty keeps current):`, "");
+  if (title === null) return;
+  const description = prompt(`Description for ${id} (empty keeps current):`, "");
+  if (description === null) return;
+  const priceRaw = prompt(`Price in credits for ${id} (empty keeps current):`, "");
+  if (priceRaw === null) return;
+  const category = prompt(`Category ${JSON.stringify(CATEGORIES)} for ${id} (empty keeps current):`, "");
+  if (category === null) return;
+  const patch = {};
+  if (title !== "") patch.title = title;
+  if (description !== "") patch.description = description;
+  if (priceRaw !== "") {
+    const price = Number(priceRaw);
+    if (!Number.isInteger(price) || price < 0) {
+      alert("Price must be a non-negative integer.");
+      return;
+    }
+    patch.price = price;
+  }
+  if (category !== "") {
+    if (!CATEGORIES.includes(category)) {
+      alert(`Category must be one of: ${CATEGORIES.join(", ")}.`);
+      return;
+    }
+    patch.category = category;
+  }
+  if (Object.keys(patch).length === 0) return;
+  const res = await fetch(`/api/admin/agents/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json", authorization: `Bearer ${secret()}` },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    alert(`Edit failed: ${err?.error?.code ?? res.status}`);
+    return;
+  }
+  tick();
+}
+
+async function askDelete(id) {
+  // Guarded server-side too (live deals refuse with 409): the confirm here
+  // is courtesy, the store check is the guarantee.
+  if (!confirm(`Permanently delete agent ${id} and its listings? Deals stay as history.`)) return;
+  const res = await fetch(`/api/admin/agents/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    headers: { authorization: `Bearer ${secret()}` },
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => null);
+    alert(`Delete failed: ${err?.error?.code ?? res.status}`);
+    return;
+  }
+  tick();
 }
 
 function renderAgentTable(tbody, rows, isQueue) {
@@ -242,6 +357,18 @@ function renderAgentTable(tbody, rows, isQueue) {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       askModeration(btn.dataset.id, btn.dataset.verb);
+    });
+  }
+  for (const btn of tbody.querySelectorAll("button[data-edit]")) {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      askEdit(btn.dataset.edit);
+    });
+  }
+  for (const btn of tbody.querySelectorAll("button[data-delete]")) {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      askDelete(btn.dataset.delete);
     });
   }
 }
@@ -344,4 +471,7 @@ $("pause").addEventListener("click", () => {
 });
 
 tick();
-timer = setInterval(tick, 2000);
+connectStream();
+// Slow backup cadence: the stream is primary, this only heals silence.
+// The error path drops to 2 s polling until a tick reconnects the stream.
+timer = setInterval(tick, 30000);

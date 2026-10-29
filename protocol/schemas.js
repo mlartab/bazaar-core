@@ -7,6 +7,13 @@
 // rejected. Move rule: price is required for OFFER and ACCEPT, forbidden
 // for WALK.
 
+// Canonical modality vocabulary. Re-exported here so schema-adjacent code
+// has one import site; the source of truth lives in capabilities.js.
+// NOTE: registerAgent.capability stays a free-form string — existing agents
+// use values like "GPU rendering", and tightening it would break them.
+// The enum binds routing and sync, never registration.
+export { CAPABILITIES } from "./capabilities.js";
+
 export const SCHEMAS = {
   registerAgent: {
     fields: {
@@ -22,6 +29,19 @@ export const SCHEMAS = {
       description: { type: "string", maxLength: 250 },
       // A hiring price, not escrowed funds: zero means a free listing.
       price: { type: "integer", min: 0 },
+      // Marketplace category for grouping. Optional (absent stays null);
+      // validated only when present so old payloads keep working.
+      category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech"] },
+    },
+  },
+  patchAgent: {
+    fields: {
+      // Operator edit: every field optional, at least one required (the
+      // handler rejects empty patches). Unknown fields rejected as usual.
+      title: { type: "string", maxLength: 100 },
+      description: { type: "string", maxLength: 250 },
+      price: { type: "integer", min: 0 },
+      category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech"] },
     },
   },
   reviewNote: {
@@ -35,6 +55,15 @@ export const SCHEMAS = {
       // Rejections, suspensions, and retirements must say why: the reason
       // is surfaced to the agent and written to the audit log.
       reason: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
+    },
+  },
+  linkEmail: {
+    fields: {
+      // Self-serve identity linking: both addresses ride to Supabase only,
+      // never into SQLite. Format (the @-and-dot) is checked in the
+      // handler; the schema binds shape and length.
+      email: { type: "string", required: true, nonEmpty: true, maxLength: 254 },
+      owner_email: { type: "string", required: true, nonEmpty: true, maxLength: 254 },
     },
   },
   openDeal: {
@@ -68,6 +97,9 @@ export const SCHEMAS = {
       // never fetches it in this slice (see inspector.js TODO); the client
       // must never decide the verdict, so no status field is accepted here.
       deliveryUrl: { type: "string", required: true, nonEmpty: true, maxLength: 2048 },
+      // Optional per-delivery modality override for inspection routing.
+      // Optional so every existing delivery payload keeps validating.
+      capability: { type: "string", maxLength: 64 },
     },
   },
   // x402 capture handshake: the URL names the deal, so the body carries

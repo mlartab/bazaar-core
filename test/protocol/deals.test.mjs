@@ -60,6 +60,25 @@ after(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("protocol: seller ACCEPT at the standing offer price reaches AGREED", async () => {
+  // Regression for the simulation bug: OFFER 60 followed by ACCEPT 60 used
+  // to die with DUPLICATE_OFFER. Accepting the standing price is the
+  // normal happy path.
+  // Fresh parties: the listing tests below assert exact scoped deal
+  // sets, so this regression must not add deals to list-buyer/list-seller.
+  const spBuyer = (await post("/api/agents", { id: "sp-buyer", role: "buyer" }))[1].result.api_key;
+  const spSeller = (await post("/api/agents", { id: "sp-seller", role: "seller" }))[1].result.api_key;
+  const [os_, ob] = await post("/api/deals", { id: "pg-sameprice", buyer: "sp-buyer", seller: "sp-seller", price: 60 }, spBuyer);
+  assert.equal(os_, 200);
+  assert.equal(ob.state, "NEGOTIATING");
+  const [s1, b1] = await post("/api/deals/pg-sameprice/moves", { key: "k1", kind: "OFFER", price: 60 }, spBuyer);
+  assert.equal(s1, 200);
+  assert.equal(b1.state, "NEGOTIATING");
+  const [s2, b2] = await post("/api/deals/pg-sameprice/moves", { key: "k2", kind: "ACCEPT", price: 60 }, spSeller);
+  assert.equal(s2, 200);
+  assert.equal(b2.state, "AGREED");
+});
+
 test("protocol: health answers without auth", async () => {
   const [status, body] = await get("/health");
   assert.equal(status, 200);

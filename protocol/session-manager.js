@@ -11,7 +11,7 @@
 import { refund } from "../src/ledger.js";
 import { DELIVERY_SWEEP_INTERVAL_MS, DELIVERY_TIMEOUT_MS, INSPECTION_SWEEP_INTERVAL_MS, INSPECTION_TIMEOUT_MS, SESSION_TIMEOUT_MS, SWEEP_INTERVAL_MS } from "./config.js";
 
-export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIMEOUT_MS, intervalMs = SWEEP_INTERVAL_MS, deliveryExpiresInMs = DELIVERY_TIMEOUT_MS, deliveryIntervalMs = DELIVERY_SWEEP_INTERVAL_MS, inspectionExpiresInMs = INSPECTION_TIMEOUT_MS, inspectionIntervalMs = INSPECTION_SWEEP_INTERVAL_MS, now = () => Date.now() } = {}) {
+export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIMEOUT_MS, intervalMs = SWEEP_INTERVAL_MS, deliveryExpiresInMs = DELIVERY_TIMEOUT_MS, deliveryIntervalMs = DELIVERY_SWEEP_INTERVAL_MS, inspectionExpiresInMs = INSPECTION_TIMEOUT_MS, inspectionIntervalMs = INSPECTION_SWEEP_INTERVAL_MS, demoSafe = false, now = () => Date.now() } = {}) {
   if (!store || !ledger) throw new Error("createSessionManager requires a store and a ledger");
 
   // One pass: expire every overdue live deal. Per-deal try/catch so one
@@ -105,6 +105,9 @@ export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIME
     inspectionExpiresAt: (from = now()) => from + inspectionExpiresInMs,
     start(onSweep) {
       if (timer !== null) return;
+      // Demo-safe: no background expiry on stage. The sweep functions stay
+      // directly callable so POST /api/admin/demo/sweep can fire them.
+      if (demoSafe) return;
       timer = arm(sweepOnce, intervalMs, onSweep);
       deliveryTimer = arm(sweepDeliveries, deliveryIntervalMs, onSweep);
       inspectionTimer = arm(sweepInspections, inspectionIntervalMs, onSweep);

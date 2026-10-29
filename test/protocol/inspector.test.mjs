@@ -6,7 +6,7 @@ import path from "node:path";
 import { openStore } from "../../protocol/db.js";
 import { createLedger, checkInvariant, balanceOf } from "../../src/ledger.js";
 import { startServer, reconcileLedger } from "../../protocol/server.js";
-import { mockVerdict, runInspection } from "../../protocol/inspector.js";
+import { mockVerdict, runInspection, parseVerdict, buildInspectionPrompt } from "../../protocol/inspector.js";
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
@@ -62,6 +62,59 @@ test("protocol: mockVerdict fails only the documented markers", () => {
   assert.equal(mockVerdict("deliverable:abc"), "SETTLED");
   for (const marker of ["reject", "REJECT", "fail", "invalid"]) {
     assert.equal(mockVerdict(`deliverable:${marker}-me`), "REJECTED");
+  }
+});
+
+test("protocol: parseVerdict accepts only the strict vocabulary", () => {
+  assert.equal(parseVerdict({ verdict: "valid" }), "SETTLED");
+  assert.equal(parseVerdict({ verdict: "  VALID  " }), "SETTLED");
+  assert.equal(parseVerdict({ verdict: "Invalid" }), "REJECTED");
+  // Anything else freezes: prose, missing fields, wrong types.
+  assert.equal(parseVerdict({ verdict: "looks good to me" }), "INCONCLUSIVE");
+  assert.equal(parseVerdict({ verdict: "" }), "INCONCLUSIVE");
+  assert.equal(parseVerdict({}), "INCONCLUSIVE");
+  assert.equal(parseVerdict(null), "INCONCLUSIVE");
+  assert.equal(parseVerdict({ verdict: 42 }), "INCONCLUSIVE");
+});
+
+test("protocol: buildInspectionPrompt names the deal under inspection", () => {
+  const prompt = buildInspectionPrompt({ dealId: "d-1", price: 40, seller: "s" });
+  assert.ok(prompt.includes("d-1"));
+  assert.ok(prompt.includes("40"));
+  assert.ok(prompt.includes("s"));
+  assert.ok(/exactly one word/i.test(prompt));
+});
+
+test("protocol: mock path stays hermetic without an API key", async () => {
+  // A developer's local .env must never turn unit tests into network
+  // calls: pin the keyless branch for the duration of this test.
+  const saved = process.env.MODEL_API_KEY;
+  delete process.env.MODEL_API_KEY;
+  const { file } = tempDb();
+  const store = openStore(file);
+  try {
+    store.saveDeal({ id: "ni-mock", state: "VERIFYING", buyer: "b", seller: "s", price: 10 });
+    const ledger = createLedger();
+    ledger.balances.b = 0;
+    ledger.balances.s = 0;
+    ledger.reserve = 10;
+    ledger.locks["ni-mock"] = { agentId: "b", amount: 10 };
+    const events = [];
+    const result = await runInspection({
+      store,
+      ledger,
+      dealId: "ni-mock",
+      deliveryUrl: "deliverable:x",
+      emit: (e) => events.push(e),
+      log: console,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.to, "SETTLED");
+    assert.equal(store.getDeal("ni-mock").state, "SETTLED");
+  } finally {
+    store.close();
+    if (saved === undefined) delete process.env.MODEL_API_KEY;
+    else process.env.MODEL_API_KEY = saved;
   }
 });
 

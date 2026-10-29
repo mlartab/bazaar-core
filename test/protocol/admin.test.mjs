@@ -237,7 +237,7 @@ test("protocol: approving an agent publishes it to the marketplace", async () =>
   assert.ok(typeof body.result.api_key === "string" && body.result.api_key.length > 0);
   const [, listed] = await get("/api/agents");
   const row = listed.result.agents.find((a) => a.id === "pending1");
-  assert.deepEqual(row, { id: "pending1", role: "seller", balance: 0, capability: "Video editing", title: null, description: null, price: null });
+  assert.deepEqual(row, { id: "pending1", role: "seller", balance: 0, capability: "Video editing", title: null, description: null, price: null, category: null });
   const [, status] = await get("/api/agents/pending1/status");
   assert.deepEqual(status.result, { status: "ACTIVE", status_reason: "verified seller" });
   const [, agents] = await aget("/api/admin/agents");
@@ -295,7 +295,72 @@ test("protocol: a full listing is stored and listed after approval", async () =>
     title: "Cinematic Cuts",
     description: "Trailer edits in 48 hours.",
     price: 150,
+    category: null,
   });
+});
+
+test("protocol: category registers, lists, and rejects out-of-set values", async () => {
+  const [bad, badBody] = await post("/api/agents", { id: "cat-bad", role: "seller", category: "podcasts" });
+  assert.equal(bad, 400);
+  assert.equal(badBody.error.code, "INVALID_SCHEMA");
+  const [s] = await post("/api/agents", { id: "cat-good", role: "seller", category: "image_gen" });
+  assert.equal(s, 200);
+  const [as_] = await moderate("cat-good", "approve", {});
+  assert.equal(as_, 200);
+  const [, listed] = await get("/api/agents");
+  assert.equal(listed.result.agents.find((a) => a.id === "cat-good").category, "image_gen");
+});
+
+test("protocol: PATCH edits listing fields and rejects unknowns", async () => {
+  const patch = async (id, body) => {
+    const res = await fetch(url + `/api/admin/agents/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: "Bearer test-admin-secret" },
+      body: JSON.stringify(body),
+    });
+    return [res.status, await res.json()];
+  };
+  const [s, b] = await patch("listed1", { title: "Recut", price: 200, category: "video_gen" });
+  assert.equal(s, 200);
+  assert.equal(b.ok, true);
+  const [, listed] = await get("/api/agents");
+  const row = listed.result.agents.find((a) => a.id === "listed1");
+  assert.equal(row.title, "Recut");
+  assert.equal(row.price, 200);
+  assert.equal(row.category, "video_gen");
+  const [sUnknown, bUnknown] = await patch("listed1", { api_key: "x" });
+  assert.equal(sUnknown, 400);
+  assert.equal(bUnknown.error.code, "INVALID_SCHEMA");
+  const [sEmpty, bEmpty] = await patch("listed1", {});
+  assert.equal(sEmpty, 400);
+  assert.equal(bEmpty.error.code, "BAD_PATCH");
+  const [sMissing] = await patch("ghost", { title: "x" });
+  assert.equal(sMissing, 404);
+});
+
+test("protocol: DELETE removes agents but refuses live deals", async () => {
+  const del = async (id) => {
+    const res = await fetch(url + `/api/admin/agents/${id}`, {
+      method: "DELETE",
+      headers: { authorization: "Bearer test-admin-secret" },
+    });
+    return [res.status, await res.json()];
+  };
+  // listed1 has no deals: removable.
+  const [s, b] = await del("listed1");
+  assert.equal(s, 200);
+  assert.deepEqual(b.result, { id: "listed1", deleted: true });
+  const [, agents] = await aget("/api/admin/agents");
+  assert.ok(!agents.result.agents.some((a) => a.id === "listed1"));
+  const [sAgain, bAgain] = await del("listed1");
+  assert.equal(sAgain, 404);
+  assert.equal(bAgain.error.code, "NO_SUCH_AGENT");
+  // pending1 holds a live deal below: refusal first.
+  const [os_] = await post("/api/deals", { id: "d-guard", buyer: "buyer", seller: "seller", price: 10 }, buyerKey);
+  assert.equal(os_, 200);
+  const [sGuard, bGuard] = await del("seller");
+  assert.equal(sGuard, 409);
+  assert.equal(bGuard.error.code, "AGENT_HAS_LIVE_DEALS");
 });
 
 test("protocol: rejecting an agent saves the reason and keeps it hidden", async () => {
@@ -407,4 +472,11 @@ test("protocol: pages and console assets are served", async () => {
   assert.equal(s, 404);
   assert.equal(b.ok, false);
   assert.equal(b.error.code, "NOT_FOUND");
+  // Images serve byte-identical: the Inspector fetches /demo-image.png and
+  // a UTF-8 round-trip would corrupt the evidence payload.
+  const png = await fetch(url + "/demo-image.png");
+  assert.equal(png.status, 200);
+  assert.match(png.headers.get("content-type"), /image\/png/);
+  const expected = fs.readFileSync(new URL("../../public/demo-image.png", import.meta.url));
+  assert.deepEqual(Buffer.from(await png.arrayBuffer()), expected);
 });

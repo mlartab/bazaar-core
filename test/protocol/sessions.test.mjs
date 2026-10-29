@@ -222,6 +222,35 @@ test("protocol: sessions keep a lockless VERIFYING deal frozen on sweep failure"
   }
 });
 
+test("protocol: demoSafe start arms no timers but manual sweeps still fire", async () => {
+  const tmp = tempFile();
+  const store = openStore(tmp.file);
+  try {
+    const ledger = createLedger();
+    store.saveDeal({ id: "d-demo", state: "NEGOTIATING", buyer: "buyer", seller: "seller", price: 50, expires_at: NOW - 1 });
+    const fired = [];
+    const sessions = createSessionManager({
+      store,
+      ledger,
+      now: () => NOW,
+      intervalMs: 20,
+      deliveryIntervalMs: 20,
+      inspectionIntervalMs: 20,
+      demoSafe: true,
+    });
+    sessions.start((outcomes) => fired.push(outcomes));
+    await new Promise((r) => setTimeout(r, 120));
+    sessions.stop();
+    // Overdue on every clock, yet untouched: no timer fired.
+    assert.deepEqual(fired, []);
+    assert.equal(store.listDeals().find((row) => row.id === "d-demo").state, "NEGOTIATING");
+    // The sweep functions stay directly callable for the manual endpoint.
+    assert.deepEqual(sessions.sweepOnce(), [{ id: "d-demo", from: "NEGOTIATING", to: "REJECTED", refunded: false }]);
+  } finally {
+    cleanup(store, tmp);
+  }
+});
+
 test("protocol: a legacy database migrates expiry columns with NULL backfill", () => {
   const tmp = tempFile();
   // Hand-build a pre-timeout file: deals predate expires_at/close_reason.

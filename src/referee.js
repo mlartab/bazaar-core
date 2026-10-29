@@ -37,7 +37,11 @@ export const RULES = [
   {
     code: "DUPLICATE_OFFER",
     message: "this price was already offered",
-    check: (move, ctx) => !hasPriceRules(move) || !contains(ctx.seenOffers, move.price),
+    // OFFER-kind only: an ACCEPT is not an offer, and accepting the
+    // standing offer price is the normal happy path. Duplicate ACCEPTs are
+    // still stopped by DUPLICATE_MOVE, the DB unique key, and the
+    // NEGOTIATING -> AGREED transition.
+    check: (move, ctx) => move.kind !== "OFFER" || !contains(ctx.seenOffers, move.price),
   },
   {
     code: "BAD_PRICE",

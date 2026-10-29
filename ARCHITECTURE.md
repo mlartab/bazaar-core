@@ -74,7 +74,12 @@ walks `ESCROW_LOCKED → EXECUTING → DELIVERED → VERIFYING` synchronously
 
 - Without `MODEL_API_KEY`, a documented deterministic mock verdicts (delivery
   URLs containing reject/fail/invalid fail; everything else passes).
-- With a key, it calls the Meta Vision endpoint with a 15s abort timeout.
+- With a key, it fetches the deliverable (https-only, redirect/byte-capped,
+  same 15 s abort budget) and calls `${META_BASE_URL}/inspect` with a
+  server-built prompt naming the deal, price, and seller — the delivery row
+  carries only a URL, no brief, and the prompt admits that limit. Only the
+  strict verdict vocabulary (`valid`/`invalid`, trimmed, case-insensitive)
+  settles; everything else is `INCONCLUSIVE`.
 - **Fail-frozen:** inconclusive verdicts leave the deal in `VERIFYING` with
   escrow locked. Funds move first (`settle`/`refund`), and only success
   advances the SQLite row — ledger-before-state, so a synced terminal state
@@ -95,6 +100,18 @@ ordering, and a missing lock records an error while leaving state untouched —
 so double-refunds are structurally impossible. `updated_at` is stamped by
 `setDealState` (the single transition choke point) and backfilled from
 `created_at` on legacy files; rows with neither stamp never expire.
+
+### Demo-safe mode and live console
+
+- `DEMO_SAFE=true` (read at boot, overridable per test) arms **zero**
+  sweeper timers: nothing expires on stage. `POST /api/admin/demo/sweep`
+  fires all three sweeps on demand through the identical outcome-to-event
+  path, and the dashboard reports `demoSafe` for the console badge.
+- The console is live-first: `GET /api/admin/events/stream` (SSE, admin
+  token via header or `?token=`) fans out from `emit()` with heartbeats and
+  dead-client pruning. `public/app.js` opens an `EventSource`, refreshes the
+  dashboard on a 500 ms debounce, and falls back to polling on transport
+  error — deal states update within ~1 s with zero render-function changes.
 
 ## 6. Restart recovery (`reconcileLedger`)
 
@@ -120,10 +137,21 @@ exact accept price.
   deal per boot).
 - Reads follow the `listAgents()` contract: sellers only, `ACTIVE` only.
   `api_key` is never synced (RLS exposes profiles to public SELECT).
+- Transport is dependency-free REST in `protocol/supabase.js` (`supabaseAdmin`
+  with `upsertProfile` / `updateEmails` / `fetchProfile`, envelope results,
+  never throws); `protocol/supabase-sync.js` exposes the domain wrappers
+  (`syncAgentRegistration`, `syncAgentStatus`, `syncAgentEmails`) over a
+  `PROFILE_COLUMNS` allowlist from which absent emails are omitted, never
+  nulled, so routine syncs cannot clobber linked addresses on upsert.
+- Self-serve identity: `POST /api/agents/:id/link-email` binds caller key to
+  URL id (403 on mismatch) and writes Supabase only; the public Trust
+  Passport `GET /api/agents/:id/profile` serves the replica row with SQLite
+  fallback (`source` field discloses which). The marketplace shows a
+  "Verified Owner" badge only when a linked email is present.
 
 ## 8. Budgets and bounds
 
 Every in-memory structure is capped: events (500, monotonic `seq` survives
 the drop), traffic log (200), audit trail (200), request bodies (1 MB),
 idempotency entries (24 h TTL, 10-minute reaper, per-agent key scope).
-Timouts and caps live in `protocol/config.js`. Test suite: **122/122 green**.
+Timouts and caps live in `protocol/config.js`. Test suite: **149/149 green** (run `npm test`).

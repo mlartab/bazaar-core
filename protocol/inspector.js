@@ -12,10 +12,57 @@
 
 import { transition } from "../src/deal-states.js";
 import { settle, refund } from "../src/ledger.js";
+import { isKnownCapability, inspectImageLocally, inspectAudioLocally } from "./capabilities.js";
+
+// Capability resolution: explicit per-delivery override first, then the
+// seller's registered capability, then null (today's mock/vision path).
+// Unknown or free-form values ("GPU rendering") are NOT capabilities —
+// they fall through to the default path so existing agents keep working.
+function resolveCapability({ store, deal, capability }) {
+  if (typeof capability === "string" && isKnownCapability(capability)) return capability;
+  const registered = store.getAgentCapability?.(deal.seller) ?? null;
+  if (isKnownCapability(registered)) return registered;
+  return null;
+}
+
+function hasByokKey() {
+  const apiKey = process.env.MODEL_API_KEY;
+  return typeof apiKey === "string" && apiKey.length > 0;
+}
+
+// Zero-cost local verdict. Bytes come from the inspector's guarded fetch;
+// capabilities never see URLs, so the SSRF surface does not grow.
+async function localVerdict({ capability, deliveryUrl, prompt }) {
+  if (capability === "video_gen") {
+    // Honest stub: no frame extraction exists yet. INCONCLUSIVE freezes
+    // escrow instead of faking a verdict; V3 wires extractVideoFrame here.
+    return { verdict: "INCONCLUSIVE", code: "VIDEO_FRAME_TODO", evidence: {} };
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS);
+  try {
+    const deliverable = await fetchDeliverable(deliveryUrl, ctrl.signal);
+    if (deliverable === null) return { verdict: "INCONCLUSIVE", code: "FETCH_FAILED", evidence: {} };
+    const bytes = Buffer.from(deliverable.base64, "base64");
+    if (capability === "image_gen") return inspectImageLocally(bytes, prompt);
+    if (capability === "speech_transcription") return inspectAudioLocally(bytes, prompt);
+    return { verdict: "INCONCLUSIVE", code: "UNKNOWN_CAPABILITY", evidence: {} };
+  } catch {
+    return { verdict: "INCONCLUSIVE", code: "FETCH_ABORTED", evidence: {} };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 const META_TIMEOUT_MS = 15000;
+// Deliverable fetch guard: the URL is agent-supplied, so it is fetched
+// like untrusted input — https only (http allowed for loopback fixtures),
+// few redirects, hard byte cap, same abort budget as the vision call.
+// NOTE: no egress-restricted worker yet; that is the follow-up.
+const FETCH_MAX_BYTES = 5 * 1024 * 1024;
+const FETCH_MAX_REDIRECTS = 3;
 
-// Deterministic mock verdict for the pre-Vision slice: deliverable
+// Deterministic mock verdict for keyless operation and tests: deliverable
 // references containing reject/fail/invalid read as failed work, everything
 // else reads as valid. Documented so demos can drive both outcomes.
 export function mockVerdict(deliveryUrl) {
@@ -26,11 +73,75 @@ export function mockVerdict(deliveryUrl) {
   return "SETTLED";
 }
 
-async function visionVerdict(deliveryUrl) {
-  // TODO(SSRF): when the real Meta Vision wiring lands, do not fetch
-  // deliveryUrl directly. Validate the scheme/host against an allowlist,
-  // cap redirects and bytes, and run the fetch from an egress-restricted
-  // worker before sending bytes to the Vision API.
+function isAllowedFetchUrl(value) {
+  let parsed = null;
+  try {
+    parsed = new URL(String(value ?? ""));
+  } catch {
+    return false;
+  }
+  if (parsed.protocol === "https:") return true;
+  if (parsed.protocol === "http:" && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")) return true;
+  return false;
+}
+
+async function fetchDeliverable(deliveryUrl, signal) {
+  if (!isAllowedFetchUrl(deliveryUrl)) return null;
+  let current = String(deliveryUrl);
+  for (let hop = 0; hop <= FETCH_MAX_REDIRECTS; hop += 1) {
+    const res = await fetch(current, { signal, redirect: "manual" });
+    if (res.status >= 300 && res.status < 400 && typeof res.headers.get("location") === "string") {
+      current = new URL(res.headers.get("location"), current).toString();
+      if (!isAllowedFetchUrl(current)) return null;
+      continue;
+    }
+    if (!res.ok) return null;
+    const reader = res.body?.getReader?.();
+    if (reader === undefined || reader === null) {
+      const buf = Buffer.from(await res.arrayBuffer());
+      return buf.length <= FETCH_MAX_BYTES
+        ? { mime: res.headers.get("content-type") ?? "application/octet-stream", base64: buf.toString("base64") }
+        : null;
+    }
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > FETCH_MAX_BYTES) {
+        try { await reader.cancel(); } catch { /* already closed */ }
+        return null;
+      }
+      chunks.push(value);
+    }
+    return { mime: res.headers.get("content-type") ?? "application/octet-stream", base64: Buffer.concat(chunks).toString("base64") };
+  }
+  return null;
+}
+
+// The delivery row carries only a URL — no stored brief — so the prompt
+// states exactly what is asked and admits its limit: does this deliverable
+// look like genuine completed work for the referenced deal?
+export function buildInspectionPrompt({ dealId, price, seller }) {
+  return [
+    "You are an inspector for agent-commerce escrow.",
+    `Deal ${dealId} (price ${price} credits, seller ${seller}) claims delivery.`,
+    "Examine the attached deliverable.",
+    'Reply with exactly one word: "valid" if it looks like genuine completed work, "invalid" otherwise.',
+  ].join(" ");
+}
+
+// Strict vocabulary, fail-frozen: anything but an exact valid/invalid
+// verdict (after trim + lowercase) is INCONCLUSIVE, never a settlement.
+export function parseVerdict(data) {
+  const verdict = typeof data?.verdict === "string" ? data.verdict.trim().toLowerCase() : "";
+  if (verdict === "valid") return "SETTLED";
+  if (verdict === "invalid") return "REJECTED";
+  return "INCONCLUSIVE";
+}
+
+async function visionVerdict({ dealId, price, seller, deliveryUrl }) {
   const apiKey = process.env.MODEL_API_KEY;
   if (typeof apiKey !== "string" || apiKey.length === 0) {
     return mockVerdict(deliveryUrl);
@@ -40,17 +151,16 @@ async function visionVerdict(deliveryUrl) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS);
   try {
+    const deliverable = await fetchDeliverable(deliveryUrl, ctrl.signal);
+    if (deliverable === null) return "INCONCLUSIVE";
     const res = await fetch(`${base}/inspect`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, deliveryUrl }),
+      body: JSON.stringify({ model, prompt: buildInspectionPrompt({ dealId, price, seller }), image: deliverable }),
       signal: ctrl.signal,
     });
     if (!res.ok) return "INCONCLUSIVE";
-    const data = await res.json().catch(() => null);
-    if (data?.verdict === "valid") return "SETTLED";
-    if (data?.verdict === "invalid") return "REJECTED";
-    return "INCONCLUSIVE";
+    return parseVerdict(await res.json().catch(() => null));
   } catch {
     // Network down, timeout, DNS: frozen, never settled. The next
     // inspector run (or an operator) can re-drive the verdict.
@@ -60,13 +170,30 @@ async function visionVerdict(deliveryUrl) {
   }
 }
 
-export async function runInspection({ store, ledger, dealId, deliveryUrl, emit, log }) {
+export async function runInspection({ store, ledger, dealId, deliveryUrl, capability, emit, log }) {
   const deal = store.getDeal(dealId);
   if (deal === null || deal.state !== "VERIFYING") {
     // Already moved (sweeper, retry, restart): nothing to decide.
     return { ok: false, code: "NOT_VERIFYING", message: `deal ${dealId} is not awaiting inspection` };
   }
-  const verdict = await visionVerdict(deliveryUrl);
+  // Oracle routing: known modalities go local first (zero cost). text_gen
+  // has no local checker yet, so it shares the default path. Unknown or
+  // absent capability keeps today's mock/vision behavior byte-identical.
+  const routed = resolveCapability({ store, deal, capability });
+  const prompt = buildInspectionPrompt({ dealId, price: deal.price, seller: deal.seller });
+  let verdict;
+  if (routed !== null && routed !== "text_gen") {
+    const local = await localVerdict({ capability: routed, deliveryUrl, prompt });
+    (log ?? console).info?.({ dealId, capability: routed, code: local.code }, "inspector.local");
+    verdict = local.verdict;
+    // BYOK escalation only: a local INCONCLUSIVE may fall through to the
+    // paid vision call, and only when the caller brought their own key.
+    if (verdict === "INCONCLUSIVE" && hasByokKey()) {
+      verdict = await visionVerdict({ dealId, price: deal.price, seller: deal.seller, deliveryUrl });
+    }
+  } else {
+    verdict = await visionVerdict({ dealId, price: deal.price, seller: deal.seller, deliveryUrl });
+  }
   if (verdict === "INCONCLUSIVE") {
     (log ?? console).warn?.({ dealId }, "inspector.inconclusive");
     emit?.({ type: "INSPECTION_INCONCLUSIVE", dealId });

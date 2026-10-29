@@ -21,7 +21,7 @@ import helmet from "helmet";
 import { logger } from "./logger.js";
 import { openStore } from "./db.js";
 import { createSessionManager } from "./session-manager.js";
-import { EVENT_CAP, IDEMPOTENCY_SWEEP_MS, IDEMPOTENCY_TTL_MS, MAX_BODY_SIZE } from "./config.js";
+import { EVENT_CAP, IDEMPOTENCY_SWEEP_MS, IDEMPOTENCY_TTL_MS, MAX_BODY_SIZE, isDemoSafe } from "./config.js";
 
 // Pure reaper for the idempotency map: entries older than ttlMs are dropped.
 // Exported so tests can prove the 24h policy without waiting a day.
@@ -69,12 +69,12 @@ export function reconcileLedger({ store, ledger }) {
 }
 import { validate as validateSchema } from "./schemas.js";
 import { runInspection } from "./inspector.js";
+import { syncProfile, syncAgentRegistration, syncAgentStatus, syncAgentEmails } from "./supabase-sync.js";
+import { supabaseAdmin } from "./supabase.js";
 import { validate as validateReferee } from "../src/referee.js";
 import { allowedMoves } from "../src/menu.js";
 import { EDGES, transition } from "../src/deal-states.js";
 import { createLedger, deposit, lock } from "../src/ledger.js";
-
-const PRICED_KINDS = new Set(["OFFER", "ACCEPT"]);
 
 function error(code, message) {
   return { ok: false, error: { code, message } };
@@ -171,7 +171,10 @@ export function createApp(dbPath) {
   // request path stamps expires_at on open, and the sweeper below flips
   // stale NEGOTIATING/AGREED deals to REJECTED. Started here so every app
   // gets one; unref'd so a forgotten app never holds the process open.
-  const sessions = createSessionManager({ store, ledger });
+  // DEMO_SAFE=true freezes background expiry for the whole process.
+  // Read here at boot (not at import) so tests can flip the env per case.
+  const demoSafe = isDemoSafe();
+  const sessions = createSessionManager({ store, ledger, demoSafe });
   const events = [];
   const idempotency = new Map();
   // Entries carry their write time; anything older than the TTL is reaped
@@ -202,24 +205,40 @@ export function createApp(dbPath) {
   };
   let seq = 0;
 
+  // Live SSE subscribers: one entry per open /api/admin/events/stream
+  // connection. Fan-out is best-effort — a dead client is pruned, never
+  // allowed to break emit() for the pipeline.
+  const sseClients = new Set();
   const emit = (event) => {
     seq += 1;
-    events.push({ seq, at: Date.now(), ...event });
+    const full = { seq, at: Date.now(), ...event };
+    events.push(full);
     // Bounded like traffic: the feed keeps the newest EVENT_CAP rows while
     // the monotonic seq survives the drop, so consumers can see the gap.
     if (events.length > EVENT_CAP) events.splice(0, events.length - EVENT_CAP);
+    const line = `data: ${JSON.stringify(full)}\n\n`;
+    for (const client of sseClients) {
+      try {
+        client.write(line);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
   };
 
   // Expiry is a protocol event, not just a row update: the console's deal
   // table and traffic feed stay truthful when a negotiation dies quietly.
-  sessions.start((outcomes) => {
+  // Shared by the timer path and the manual demo-sweep endpoint so a
+  // forced sweep produces identical events and logs.
+  const handleSweepOutcomes = (outcomes, tag) => {
     for (const outcome of outcomes) {
       if (outcome.to === "REJECTED") {
         emit({ type: "STATE", dealId: outcome.id, from: outcome.from, to: "REJECTED", reason: outcome.reason ?? "EXPIRED_TIMEOUT" });
       }
     }
-    if (outcomes.length > 0) logger.info({ outcomes }, "session.sweep");
-  });
+    if (outcomes.length > 0) logger.info({ outcomes }, tag);
+  };
+  sessions.start((outcomes) => handleSweepOutcomes(outcomes, "session.sweep"));
 
   // Operator-only audit trail: every moderation decision lands here with a
   // timestamp, separate from the protocol events feed so neither consumer
@@ -246,7 +265,9 @@ export function createApp(dbPath) {
       role: "buyer",
       budget: ledger.balances[deal.buyer] ?? deal.price,
       seenKeys: rows.map((row) => row.key),
-      seenOffers: rows.filter((row) => PRICED_KINDS.has(row.kind)).map((row) => row.price),
+      // OFFER prices only: ACCEPTs are agreements, not offers, and must
+      // never trip DUPLICATE_OFFER (see the referee rule).
+      seenOffers: rows.filter((row) => row.kind === "OFFER").map((row) => row.price),
     };
   };
 
@@ -284,6 +305,77 @@ export function createApp(dbPath) {
       return [200, { ok: true, state: null, allowedMoves: [], result: review }];
     },
 
+    // Public Trust Passport: Supabase profile first (email, owner, joined
+    // date), SQLite fallback when the replica is unreachable. The fallback
+    // shape is the already-public getAgent + status — api_key can never
+    // appear here by construction (neither reader carries it). Async: the
+    // dispatcher awaits handlers, so sync handlers are unaffected.
+    "GET /api/agents/:id/profile": async (_body, id) => {
+      const local = store.getAgent(id);
+      if (local === null) return [404, error("NO_SUCH_AGENT", `no agent with id ${id}`)];
+      const fallback = () => {
+        // Listing fields come from the admin list, picked down to the
+        // public subset — same fields GET /api/agents already exposes.
+        const full = store.listAllAgents().find((row) => row.id === id);
+        const status = store.getAgentStatus(id);
+        return [200, { ok: true, state: null, allowedMoves: [], result: {
+          agent_id: id,
+          role: local.role,
+          capability: full?.capability ?? null,
+          title: full?.title ?? null,
+          description: full?.description ?? null,
+          price: Number.isInteger(full?.price) ? full.price : null,
+          category: full?.category ?? null,
+          status: status?.status ?? null,
+          email: null,
+          owner_email: null,
+          joined: null,
+          source: "sqlite",
+        } }];
+      };
+      const client = supabaseAdmin();
+      if (client === null) return fallback();
+      const fetched = await client.fetchProfile(id);
+      if (!fetched.ok) return fallback();
+      const p = fetched.profile;
+      return [200, { ok: true, state: null, allowedMoves: [], result: {
+        agent_id: id,
+        role: p.role ?? local.role,
+        capability: p.capability ?? null,
+        title: p.title ?? null,
+        description: p.description ?? null,
+        price: Number.isInteger(p.price) ? p.price : null,
+        category: p.category ?? null,
+        status: p.status ?? null,
+        email: p.email ?? null,
+        owner_email: p.owner_email ?? null,
+        joined: p.created_at ?? null,
+        source: "supabase",
+      } }];
+    },
+
+    // Self-serve identity linking: the caller's key must belong to the URL
+    // id (the dispatcher resolves the agent for this route, like deals),
+    // so no agent can attach email to another agent. Writes Supabase
+    // only — SQLite holds no emails. A dead replica answers 503 while the
+    // rest of the protocol keeps working.
+    "POST /api/agents/:id/link-email": async (body, id, agent) => {
+      const checked = validateSchema("linkEmail", body);
+      if (!checked.ok) return [400, toContractError(checked)];
+      const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+      if (!emailRe.test(body.email) || !emailRe.test(body.owner_email)) {
+        return [400, error("INVALID_SCHEMA", "field email must be a valid email address")];
+      }
+      if (agent === null || agent.id !== id) {
+        return [403, error("FORBIDDEN", `only agent ${id} can link its own email`)];
+      }
+      const linked = await syncAgentEmails(id, { email: body.email, owner_email: body.owner_email });
+      if (!linked.ok) {
+        return [503, error("SUPABASE_UNAVAILABLE", "email linking is temporarily unavailable")];
+      }
+      return [200, { ok: true, state: null, allowedMoves: [], result: { agent_id: id, linked: true } }];
+    },
+
     "POST /api/agents": (body) => {
       const checked = validateSchema("registerAgent", body);
       if (!checked.ok) return [400, toContractError(checked)];
@@ -294,9 +386,12 @@ export function createApp(dbPath) {
       // agent shape stays { id, role, balance }; the credential rides
       // beside it, shown once like a Stripe secret key.
       const apiKey = randomUUID();
-      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, api_key: apiKey });
+      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, category: body.category, api_key: apiKey });
       ensureAccount(body.id);
       emit({ type: "AGENT_REGISTERED", agentId: body.id, role: body.role });
+      // Outbound replica only: after the SQLite commit, never awaited, so
+      // a Supabase outage stales discovery without failing registration.
+      syncAgentRegistration({ id: body.id, role: body.role, balance: 0, capability: body.capability, status: "PENDING", title: body.title, description: body.description, price: body.price, category: body.category }).catch(() => {});
       // The queue message rides beside the frozen agent shape, so existing
       // readers keep passing while new agents learn they are not listed yet.
       return [
@@ -398,6 +493,12 @@ export function createApp(dbPath) {
       if (agent.id !== deal.buyer && agent.id !== deal.seller) {
         return [403, error("FORBIDDEN", `agent ${agent.id} is not a party of deal ${id}`)];
       }
+      // Buyer-only capture: the seller never captures escrow, even though
+      // they are a party. The lock holds buyer funds; only the buyer may
+      // authorize the capture handshake.
+      if (agent.id !== deal.buyer) {
+        return [403, error("FORBIDDEN", `only the buyer can capture escrow for deal ${id}`)];
+      }
       if (deal.state === "NEGOTIATING") {
         return [402, error("NEEDS_ACCEPTANCE", `deal ${id} has no accepted price to pay yet`)];
       }
@@ -475,7 +576,7 @@ export function createApp(dbPath) {
       }
       // Fire-and-forget verdict: closures only, never req/res. A rejection
       // logs and leaves the deal VERIFYING (frozen), never settles on doubt.
-      runInspection({ store, ledger, dealId: id, deliveryUrl: merged.deliveryUrl, emit, log: logger }).catch((err) => {
+      runInspection({ store, ledger, dealId: id, deliveryUrl: merged.deliveryUrl, capability: merged.capability, emit, log: logger }).catch((err) => {
         logger.error({ err, dealId: id }, "inspector.crashed");
       });
       const current = store.getDeal(id);
@@ -563,7 +664,7 @@ export function createApp(dbPath) {
           ok: true,
           state: null,
           allowedMoves: [],
-          result: { stats: store.dealStats(), deals: store.listDeals(), logs: traffic.slice(-50) },
+          result: { stats: store.dealStats(), deals: store.listDeals(), logs: traffic.slice(-50), demoSafe },
         },
       ];
     },
@@ -574,6 +675,31 @@ export function createApp(dbPath) {
 
     "GET /api/admin/audit": () => {
       return [200, { ok: true, state: null, allowedMoves: [], result: { audit: audit.slice(-100) } }];
+    },
+
+    // Demo remote control: fire all three sweeps on demand and report what
+    // moved. In demo-safe mode this is the ONLY way expiry runs; normally
+    // it is a harmless duplicate of the next timer tick (sweeps are
+    // idempotent — already-terminal rows are never reselected).
+    "POST /api/admin/demo/sweep": () => {
+      const groups = [
+        ["sessions", sessions.sweepOnce()],
+        ["deliveries", sessions.sweepDeliveries()],
+        ["inspections", sessions.sweepInspections()],
+      ];
+      for (const [tag, outcomes] of groups) handleSweepOutcomes(outcomes, `demo.sweep.${tag}`);
+      return [
+        200,
+        {
+          ok: true,
+          state: null,
+          allowedMoves: [],
+          result: {
+            demoSafe,
+            sweeps: Object.fromEntries(groups.map(([tag, outcomes]) => [tag, outcomes])),
+          },
+        },
+      ];
     },
 
     // One moderation decision: validate the note, run the lifecycle table,
@@ -608,6 +734,33 @@ export function createApp(dbPath) {
       if (!checked.ok) return [400, toContractError(checked)];
       return decideAgent(id, "RETIRED", body.reason);
     },
+
+    // Operator edit: allowlisted partial update of listing fields. Unknown
+    // fields are rejected by schema; empty patches by the store.
+    "PATCH /api/admin/agents/:id": (body, id) => {
+      const checked = validateSchema("patchAgent", body);
+      if (!checked.ok) return [400, toContractError(checked)];
+      const saved = store.updateAgent(id, body);
+      if (!saved.ok) {
+        const status = saved.code === "NO_SUCH_AGENT" ? 404 : 400;
+        return [status, toContractError(saved)];
+      }
+      recordAudit({ action: "EDIT", agentId: id, from: null, to: null, reason: null });
+      syncProfile({ ...store.getAgent(id), ...store.getAgentStatus(id), capability: store.getAgentCapability(id), category: store.getAgentCategory(id) }).catch(() => {});
+      return [200, { ok: true, state: null, allowedMoves: [], result: store.getAgentStatus(id) }];
+    },
+
+    // Operator removal: guarded by the store (live deals refuse with 409).
+    // Deal and move rows stay as audit history; only the agent row goes.
+    "DELETE /api/admin/agents/:id": (_body, id) => {
+      const removed = store.deleteAgent(id);
+      if (!removed.ok) {
+        const status = removed.code === "NO_SUCH_AGENT" ? 404 : 409;
+        return [status, toContractError(removed)];
+      }
+      recordAudit({ action: "DELETE", agentId: id, from: null, to: null, reason: null });
+      return [200, { ok: true, state: null, allowedMoves: [], result: { id, deleted: true } }];
+    },
   };
 
   function decideAgent(id, to, note) {
@@ -617,16 +770,26 @@ export function createApp(dbPath) {
       return [status, toContractError(saved)];
     }
     recordAudit({ action: to, agentId: id, from: saved.from, to: saved.to, reason: note ?? null });
+    // Replica follows the commit: status transitions propagate for
+    // discovery filtering, failures isolated from moderation. Capability
+    // rides along explicitly — neither narrow reader carries it.
+    syncAgentStatus(id, to, note).catch(() => {});
+    syncProfile({ ...store.getAgent(id), ...store.getAgentStatus(id), capability: store.getAgentCapability(id), category: store.getAgentCategory(id) }).catch(() => {});
     return [200, { ok: true, state: null, allowedMoves: [], result: store.getAgentStatus(id) }];
   }
 
   // Flat public/ directory only: no nested paths, no parent traversal, and
   // only the three types the site needs. Anything else falls through to
   // the JSON 404, so pages can never shadow an API route.
+  const IMAGE_TYPES = new Set([".png", ".jpg", ".jpeg", ".svg"]);
   const STATIC_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".svg": "image/svg+xml",
   };
   // Extensionless page routes; checked before the flat-file fallback.
   const PAGES = {
@@ -640,10 +803,17 @@ export function createApp(dbPath) {
   const serveStatic = (pathname) => {
     const file = Object.hasOwn(PAGES, pathname) ? PAGES[pathname] : pathname.slice(1);
     if (file.includes("..") || file.includes("/") || file.includes("\\")) return null;
-    const type = STATIC_TYPES[path.extname(file)];
+    const ext = path.extname(file).toLowerCase();
+    const type = STATIC_TYPES[ext];
     if (type === undefined) return null;
     try {
-      return { type, text: fs.readFileSync(new URL(file, PUBLIC_DIR), "utf8") };
+      // Images travel as raw bytes: a UTF-8 decode would corrupt PNG/JPEG
+      // payloads and break inspector evidence and browser renders alike.
+      // Text assets keep the string path exactly as before.
+      const body = IMAGE_TYPES.has(ext)
+        ? fs.readFileSync(new URL(file, PUBLIC_DIR))
+        : fs.readFileSync(new URL(file, PUBLIC_DIR), "utf8");
+      return { type, body };
     } catch {
       return null;
     }
@@ -652,7 +822,11 @@ export function createApp(dbPath) {
   const match = (method, pathname) => {
     const direct = handlers[`${method} ${pathname}`];
     if (direct !== undefined) return [direct, undefined];
-    if (method === "POST" || method === "GET") {
+    if (
+      method === "POST" ||
+      method === "GET" ||
+      ((method === "PATCH" || method === "DELETE") && /^\/api\/admin\/agents\/[^/]+$/.test(pathname))
+    ) {
       const moves = pathname.match(/^\/api\/deals\/([^/]+)\/moves$/);
       if (moves !== null && method === "POST") {
         return [handlers["POST /api/deals/:id/moves"], decodeURIComponent(moves[1])];
@@ -673,9 +847,21 @@ export function createApp(dbPath) {
       if (agentStatus !== null && method === "GET" && decodeURIComponent(agentStatus[1]) !== "") {
         return [handlers["GET /api/agents/:id/status"], decodeURIComponent(agentStatus[1])];
       }
+      const agentProfile = pathname.match(/^\/api\/agents\/([^/]+)\/profile$/);
+      if (agentProfile !== null && method === "GET" && decodeURIComponent(agentProfile[1]) !== "") {
+        return [handlers["GET /api/agents/:id/profile"], decodeURIComponent(agentProfile[1])];
+      }
+      const linkEmail = pathname.match(/^\/api\/agents\/([^/]+)\/link-email$/);
+      if (linkEmail !== null && method === "POST" && decodeURIComponent(linkEmail[1]) !== "") {
+        return [handlers["POST /api/agents/:id/link-email"], decodeURIComponent(linkEmail[1])];
+      }
       const moderation = pathname.match(/^\/api\/admin\/agents\/([^/]+)\/(approve|reject|suspend|retire)$/);
       if (moderation !== null && method === "POST" && decodeURIComponent(moderation[1]) !== "") {
         return [handlers[`POST /api/admin/agents/:id/${moderation[2]}`], decodeURIComponent(moderation[1])];
+      }
+      const agentEdit = pathname.match(/^\/api\/admin\/agents\/([^/]+)$/);
+      if (agentEdit !== null && (method === "PATCH" || method === "DELETE") && decodeURIComponent(agentEdit[1]) !== "") {
+        return [handlers[`${method} /api/admin/agents/:id`], decodeURIComponent(agentEdit[1])];
       }
     }
     return [undefined, undefined];
@@ -741,12 +927,53 @@ export function createApp(dbPath) {
       const query = Object.fromEntries(parsed.searchParams);
       const method = (req.method ?? "GET").toUpperCase();
       loggedPath = pathname;
-      if (pathname.startsWith("/api/admin/")) {
+      // The SSE stream authenticates below (header OR query token —
+      // browsers cannot set headers on EventSource), so it skips the
+      // header-only gate. Every other /api/admin/* path keeps it.
+      const isStream = method === "GET" && pathname === "/api/admin/events/stream";
+      if (pathname.startsWith("/api/admin/") && !isStream) {
         const denied = checkAdmin(req);
         if (denied !== null) {
           reject(401, denied);
           return;
         }
+      }
+      if (isStream) {
+        // Query-token fallback: compared in constant time like the header.
+        // loggedPath records pathname only, so the token never lands in
+        // traffic logs; assume proxies may log URLs and rotate on leak.
+        let authed = checkAdmin(req) === null;
+        const secret = process.env.ADMIN_SECRET;
+        if (!authed && typeof secret === "string" && secret.length > 0 && typeof query.token === "string") {
+          const a = Buffer.from(`Bearer ${query.token}`);
+          const b = Buffer.from(`Bearer ${secret}`);
+          authed = a.length === b.length && timingSafeEqual(a, b);
+        }
+        if (!authed) {
+          reject(401, error("UNAUTHORIZED", "valid admin credentials required"));
+          return;
+        }
+        res.writeHead(200, {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+        });
+        res.write(`: connected seq=${seq}\n\n`);
+        sseClients.add(res);
+        const heartbeat = setInterval(() => {
+          try {
+            res.write(`: ping\n\n`);
+          } catch {
+            clearInterval(heartbeat);
+            sseClients.delete(res);
+          }
+        }, 15000);
+        if (typeof heartbeat.unref === "function") heartbeat.unref();
+        req.on("close", () => {
+          clearInterval(heartbeat);
+          sseClients.delete(res);
+        });
+        return;
       }
       // Agent-scoped listing authenticates like the mutating routes: the key
       // decides whose deals you may see. Every other GET stays public.
@@ -760,11 +987,38 @@ export function createApp(dbPath) {
         send(listStatus, listPayload);
         return;
       }
-      // Deal detail and the events feed are agent-authenticated: a valid
-      // x-agent-key is required. The operator console holds no agent key,
-      // so a valid admin Bearer [REDACTED] accepted here too — either
-      // credential proves you may read, and neither leaks into the other.
-      if (method === "GET" && (pathname === "/api/events" || /^\/api\/deals\/[^/]+$/.test(pathname))) {
+      // Deal detail is party-scoped at the dispatcher because the handler
+      // never receives identity (the generic GET tail passes undefined as
+      // agent). Parties always read; the operator console reads via a valid
+      // admin [SECURITY_DATA] token; any other keyed agent is a bystander.
+      // Unknown ids 404 here with the handler's exact code so the contract
+      // is unchanged whether the gate or the handler answers.
+      if (method === "GET" && /^\/api\/deals\/[^/]+$/.test(pathname)) {
+        const [, detailId] = match(method, pathname);
+        const deal = store.getDeal(detailId);
+        if (deal === null) {
+          reject(404, error("NO_SUCH_DEAL", `no deal with id ${detailId}`));
+          return;
+        }
+        const isAdmin = checkAdmin(req) === null;
+        const viewer = isAdmin ? null : store.getAgentByKey(req.headers["x-agent-key"]);
+        if (viewer === null && !isAdmin) {
+          reject(401, error("UNAUTHORIZED", "reading deals and events requires a valid x-agent-key header"));
+          return;
+        }
+        if (!isAdmin && viewer.id !== deal.buyer && viewer.id !== deal.seller) {
+          reject(403, error("FORBIDDEN", `agent ${viewer.id} is not a party of deal ${detailId}`));
+          return;
+        }
+        const [detailStatus, detailPayload] = handlers["GET /api/deals/:id"](undefined, detailId);
+        send(detailStatus, detailPayload);
+        return;
+      }
+      // The events feed is agent-authenticated: a valid x-agent-key is
+      // required. The operator console holds no agent key, so a valid admin
+      // Bearer [REDACTED] accepted here too — either credential proves
+      // you may read, and neither leaks into the other.
+      if (method === "GET" && pathname === "/api/events") {
         const admin = checkAdmin(req);
         const viewer = admin === null ? { id: "admin" } : store.getAgentByKey(req.headers["x-agent-key"]);
         if (viewer === null) {
@@ -780,25 +1034,31 @@ export function createApp(dbPath) {
           const asset = serveStatic(pathname);
           if (asset !== null) {
             recordTraffic({ correlationId, method, path: pathname, status: 200, latencyMs: Date.now() - startedAt });
-            res.writeHead(200, { "content-type": asset.type, "content-length": Buffer.byteLength(asset.text) });
-            res.end(asset.text);
+            const length = typeof asset.body === "string" ? Buffer.byteLength(asset.body) : asset.body.length;
+            res.writeHead(200, { "content-type": asset.type, "content-length": length });
+            res.end(asset.body);
             return;
           }
         }
         reject(404, error("NOT_FOUND", `no route for ${method} ${pathname}`));
         return;
       }
-      if (method === "POST") {
+      // PATCH/DELETE admin routes carry no idempotency key by design
+      // (single-operator console actions, not agent retries), so they
+      // skip the POST idempotency gate but still get a parsed body.
+      if (method === "POST" || method === "PATCH" || method === "DELETE") {
         const key = req.headers["idempotency-key"];
-        if (typeof key !== "string" || key.length === 0) {
+        const needsKey = method === "POST";
+        if (needsKey && (typeof key !== "string" || key.length === 0)) {
           reject(400, error("MISSING_IDEMPOTENCY_KEY", "POST requests require an Idempotency-Key header"));
           return;
         }
         // Agent authentication, before idempotency: only the registration
         // route mints credentials, so it is the one mutating route that
-        // stays keyless. A replay never skips this gate.
+        // stays keyless. A replay never skips this gate. link-email resolves
+        // the caller too — the handler then binds key to URL id.
         let agent = null;
-        if (pathname.startsWith("/api/deals")) {
+        if (pathname.startsWith("/api/deals") || /^\/api\/agents\/[^/]+\/link-email$/.test(pathname)) {
           agent = store.getAgentByKey(req.headers["x-agent-key"]);
           if (agent === null) {
             reject(401, error("UNAUTHORIZED", "mutating protocol routes require a valid x-agent-key header"));
@@ -809,7 +1069,10 @@ export function createApp(dbPath) {
         // agents names two independent slots, so Agent B can never replay
         // Agent A's receipt. Keyless registration keeps the shared scope.
         const idemKey = agent !== null ? `${agent.id}:${key}` : `public:${key}`;
-        const replay = idempotency.get(idemKey);
+        // Keyless PATCH/DELETE skip replay AND caching below: without a
+        // client key every request would share one slot and a second
+        // PATCH would replay the first one's response.
+        const replay = needsKey ? idempotency.get(idemKey) : undefined;
         if (replay !== undefined) {
           send(replay.status, replay.payload, replay.headers);
           return;
@@ -826,17 +1089,19 @@ export function createApp(dbPath) {
           reject(400, error("INVALID_JSON", "request body must be valid JSON"));
           return;
         }
-        const [status, payload, headers] = handler(body, id, agent);
+        // Awaited so async handlers (profile, link-email) work; sync
+        // handlers return plain tuples, which await passes through.
+        const [status, payload, headers] = await handler(body, id, agent);
         // Cache successes only: caching a rejection would freeze the first
         // error in place and punish clients that retry with a fixed request.
         // Headers ride along so a replayed pay still carries its receipt.
         // `at` feeds the TTL reaper so entries die after 24 hours.
-        if (payload.ok === true) idempotency.set(idemKey, { status, payload, headers, at: Date.now() });
+        if (needsKey && payload.ok === true) idempotency.set(idemKey, { status, payload, headers, at: Date.now() });
         if (payload.ok === false) req.log.warn({ status, code: payload.error?.code }, "request.rejected");
         send(status, payload, headers);
         return;
       }
-      const [status, payload] = handler(undefined, id, undefined, query);
+      const [status, payload] = await handler(undefined, id, undefined, query);
       if (payload.ok === false) req.log.warn({ status, code: payload.error?.code }, "request.rejected");
       send(status, payload);
     } catch (err) {

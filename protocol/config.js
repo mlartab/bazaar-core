@@ -16,3 +16,10 @@ export const MAX_BODY_SIZE = 1024 * 1024;
 export const EVENT_CAP = 500;
 export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 export const IDEMPOTENCY_SWEEP_MS = 10 * 60 * 1000;
+// Demo-safe mode: when process.env.DEMO_SAFE is "true" (read lazily at
+// boot, never at import, so tests can flip it), no sweeper timer is armed
+// and expiry only runs via POST /api/admin/demo/sweep. Deals cannot die
+// mid-narration on stage.
+export function isDemoSafe(env = process.env) {
+  return env.DEMO_SAFE === "true";
+}

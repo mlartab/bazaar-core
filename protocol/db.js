@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS agents (
   title TEXT,
   description TEXT,
   price INTEGER,
+  category TEXT,
   api_key TEXT
 );
 CREATE TABLE IF NOT EXISTS deals (
@@ -154,7 +155,7 @@ export function openStore(path) {
     }
     // Marketplace listing fields. Same guarded pattern: the throws mean
     // "already there", which is the common case on old database files.
-    for (const column of ["title TEXT", "description TEXT", "price INTEGER"]) {
+    for (const column of ["title TEXT", "description TEXT", "price INTEGER", "category TEXT"]) {
       try {
         db.exec(`ALTER TABLE agents ADD COLUMN ${column}`);
       } catch {
@@ -194,7 +195,7 @@ export function openStore(path) {
 
     saveAgent(agent) {
       if (!agent || !isValidId(agent.id)) return fail("BAD_ID", "agent must have a non-empty string id");
-      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, api_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, category, api_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         agent.id,
         agent.role ?? null,
         agent.balance ?? null,
@@ -204,6 +205,7 @@ export function openStore(path) {
         agent.title ?? null,
         agent.description ?? null,
         agent.price ?? null,
+        agent.category ?? null,
         // The server always passes a fresh key; this default keeps the
         // column invariant (never NULL) for direct store callers too.
         agent.api_key ?? randomUUID(),
@@ -223,6 +225,13 @@ export function openStore(path) {
       if (!isValidId(id)) return null;
       return get("SELECT api_key FROM agents WHERE id = ?", [id])?.api_key ?? null;
     },
+    // Narrow capability reader for inspection routing. Returns the raw
+    // string (possibly free-form or null); the inspector decides whether
+    // it names a known capability.
+    getAgentCapability(id) {
+      if (!isValidId(id)) return null;
+      return get("SELECT capability FROM agents WHERE id = ?", [id])?.capability ?? null;
+    },
     getAgent(id) {
       // Column list frozen: existing readers assert this exact shape.
       return get("SELECT id, role, balance FROM agents WHERE id = ?", [id]) ?? null;
@@ -233,11 +242,11 @@ export function openStore(path) {
       // here by construction rather than by UI filtering. Suspension and
       // retirement change visibility only: escrows, deals, and balances
       // are untouched, so in-flight work settles naturally.
-      return all("SELECT id, role, balance, capability, title, description, price FROM agents WHERE role = 'seller' AND status = 'ACTIVE' ORDER BY rowid");
+      return all("SELECT id, role, balance, capability, title, description, price, category FROM agents WHERE role = 'seller' AND status = 'ACTIVE' ORDER BY rowid");
     },
     listAllAgents() {
       // Operator-only: moderation needs every row including hidden ones.
-      return all("SELECT id, role, balance, capability, status, status_reason, title, description, price FROM agents ORDER BY rowid");
+      return all("SELECT id, role, balance, capability, status, status_reason, title, description, price, category FROM agents ORDER BY rowid");
     },
     getAgentStatus(id) {
       return get("SELECT status, status_reason FROM agents WHERE id = ?", [id]) ?? null;
@@ -261,6 +270,47 @@ export function openStore(path) {
       }
       run("UPDATE agents SET status = ?, status_reason = ? WHERE id = ?", [status, reason ?? null, id]);
       return { ok: true, from: row.status, to: status };
+    },
+    getAgentCategory(id) {
+      if (!isValidId(id)) return null;
+      return get("SELECT category FROM agents WHERE id = ?", [id])?.category ?? null;
+    },
+    // Allowlisted partial update for operator edits. Unknown fields are
+    // rejected by the caller (patchAgent schema); here only known columns
+    // are ever written.
+    updateAgent(id, patch) {
+      if (!isValidId(id)) return fail("BAD_ID", "agent must have a non-empty string id");
+      const sets = [];
+      const params = [];
+      for (const column of ["title", "description", "price", "category"]) {
+        if (patch[column] !== undefined) {
+          sets.push(`${column} = ?`);
+          params.push(patch[column]);
+        }
+      }
+      if (sets.length === 0) return fail("BAD_PATCH", "patch must change at least one listing field");
+      params.push(id);
+      const result = run(`UPDATE agents SET ${sets.join(", ")} WHERE id = ?`, params);
+      if (result.changes === 0) return fail("NO_SUCH_AGENT", `no agent with id ${id}`);
+      return { ok: true };
+    },
+    // Operator removal. Refused while the agent has non-terminal deals —
+    // money history is never orphaned by an admin click. Deal and move rows
+    // stay as audit history; only the agent row (and its key) goes away.
+    deleteAgent(id) {
+      if (!isValidId(id)) return fail("BAD_ID", "agent must have a non-empty string id");
+      if (get("SELECT id FROM agents WHERE id = ?", [id]) === undefined) {
+        return fail("NO_SUCH_AGENT", `no agent with id ${id}`);
+      }
+      const live = get(
+        "SELECT COUNT(*) AS n FROM deals WHERE (buyer = ? OR seller = ?) AND state NOT IN ('SETTLED', 'REJECTED')",
+        [id, id],
+      );
+      if (live.n > 0) {
+        return fail("AGENT_HAS_LIVE_DEALS", `agent ${id} still has live deals`);
+      }
+      run("DELETE FROM agents WHERE id = ?", [id]);
+      return { ok: true };
     },
 
     saveDeal(deal) {

@@ -50,13 +50,17 @@ test("protocol: schemas reject out-of-set values", () => {
   assert.equal(invalid("move", { dealId: "d1", key: "k1", kind: "offer", price: 50 }).field, "kind");
   // The verdict is server-side: any client-supplied status is unknown.
   assert.equal(invalid("delivery", { id: "x1", dealId: "d1", deliveryUrl: "u1", status: "DELIVERED" }).field, "status");
-  assert.deepEqual(Object.keys(SCHEMAS).sort(), ["delivery", "moderationNote", "move", "openDeal", "pay", "registerAgent", "reviewNote"]);
+  assert.deepEqual(Object.keys(SCHEMAS).sort(), ["delivery", "linkEmail", "moderationNote", "move", "openDeal", "patchAgent", "pay", "registerAgent", "reviewNote"]);
   assert.deepEqual(validate("reviewNote", {}), { ok: true });
   assert.deepEqual(validate("reviewNote", { message: "ok" }), { ok: true });
   assert.deepEqual(validate("moderationNote", { reason: "spam" }), { ok: true });
   assert.equal(validate("moderationNote", {}).code, "INVALID_SCHEMA");
   assert.equal(validate("moderationNote", { reason: "" }).code, "INVALID_SCHEMA");
   assert.equal(validate("moderationNote", { reason: 42 }).code, "INVALID_SCHEMA");
+  assert.deepEqual(validate("linkEmail", { email: "a@example.com", owner_email: "o@example.com" }), { ok: true });
+  assert.equal(validate("linkEmail", { email: "a@example.com" }).code, "INVALID_SCHEMA");
+  assert.equal(validate("linkEmail", { email: "", owner_email: "o@example.com" }).code, "INVALID_SCHEMA");
+  assert.equal(validate("linkEmail", { email: "a@example.com", owner_email: "o@example.com", api_key: "x" }).field, "api_key");
 });
 
 test("protocol: schemas reject a WALK move carrying a price", () => {
@@ -82,6 +86,23 @@ test("protocol: schemas accept a valid request for each endpoint", () => {
 
 test("protocol: schemas reject any field on pay", () => {
   assert.equal(invalid("pay", { fee: 1 }).field, "fee");
+});
+
+test("protocol: category is optional on registration but strict when present", () => {
+  assert.deepEqual(validate("registerAgent", { id: "c1", role: "seller" }), { ok: true });
+  assert.deepEqual(
+    validate("registerAgent", { id: "c2", role: "seller", category: "image_gen" }),
+    { ok: true },
+  );
+  assert.equal(validate("registerAgent", { id: "c3", role: "seller", category: "podcasts" }).code, "INVALID_SCHEMA");
+});
+
+test("protocol: patchAgent accepts partial edits and rejects unknowns", () => {
+  assert.deepEqual(validate("patchAgent", { title: "New" }), { ok: true });
+  assert.deepEqual(validate("patchAgent", { price: 0, category: "data" }), { ok: true });
+  assert.equal(validate("patchAgent", { price: -1 }).code, "INVALID_SCHEMA");
+  assert.equal(validate("patchAgent", { category: "nope" }).code, "INVALID_SCHEMA");
+  assert.equal(validate("patchAgent", { api_key: "x" }).code, "INVALID_SCHEMA");
 });
 
 test("protocol: schemas reject over-long identifiers", () => {

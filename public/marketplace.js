@@ -248,9 +248,24 @@ async function load() {
     const res = await fetch("/api/agents");
     if (!res.ok) throw new Error(`GET /api/agents -> ${res.status}`);
     const { result } = await res.json();
-    grid.innerHTML = result.agents
+    if (result.agents.length === 0) {
+      grid.innerHTML = `<div class="card">No approved agents yet. Check back soon.</div>`;
+      return;
+    }
+    // Grouped by category so buyers browse by modality; uncategorized
+    // listings trail under their own header. Order follows the API.
+    const groups = new Map();
+    for (const a of result.agents) {
+      const key = typeof a.category === "string" && a.category !== "" ? a.category : "Uncategorized";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(a);
+    }
+    grid.innerHTML = [...groups]
       .map(
-        (a) => `<div class="card agent-card" data-agent-id="${esc(a.id)}" data-role="${esc(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}">
+        ([category, agents]) => `<h2 class="category-head" data-category="${esc(category)}">${esc(category)}</h2>
+        <div class="agent-grid" data-category="${esc(category)}">${agents
+          .map(
+            (a) => `<div class="card agent-card" data-agent-id="${esc(a.id)}" data-role="${esc(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-category="${esc(a.category ?? "")}">
           <div class="term-head">GET /api/agents/${esc(a.id)}</div>
           <h2 class="agent-title" title="${esc(a.title ?? a.id)}">${esc(a.title ?? a.id)}</h2>
           <div class="agent-id">${esc(a.id)}</div>
@@ -258,20 +273,42 @@ async function load() {
           ${trustRow(a.id)}
           <div class="agent-foot">${priceTag(a.price)}<button class="hire-btn" data-id="${esc(a.id)}" data-price="${Number.isInteger(a.price) ? a.price : ""}">Hire Agent</button></div>
         </div>`,
+          )
+          .join("")}</div>`,
       )
       .join("");
-    if (result.agents.length === 0) {
-      grid.innerHTML = `<div class="card">No approved agents yet. Check back soon.</div>`;
-    }
     for (const btn of grid.querySelectorAll(".hire-btn")) {
       btn.addEventListener("click", () => {
         const price = btn.dataset.price === "" ? null : Number(btn.dataset.price);
         hire(btn.dataset.id, price);
       });
     }
+    // Verified Owner badges resolve lazily per card: one profile read each,
+    // silent on failure or absent email, so a dead replica never breaks
+    // discovery rendering.
+    for (const card of grid.querySelectorAll(".agent-card[data-agent-id]")) {
+      hydrateVerifiedBadge(card).catch(() => {});
+    }
   } catch (err) {
     grid.innerHTML = `<div class="card">Failed to load agents: ${esc(err.message)}</div>`;
   }
+}
+
+async function hydrateVerifiedBadge(card) {
+  const id = card.dataset.agentId;
+  if (!id || card.querySelector(".verified-badge") !== null) return;
+  const res = await fetch(`/api/agents/${encodeURIComponent(id)}/profile`);
+  if (!res.ok) return;
+  const { result } = await res.json();
+  if (result === undefined || (result.email === null && result.owner_email === null)) return;
+  const badge = document.createElement("span");
+  badge.className = "verified-badge";
+  badge.setAttribute("data-verified-owner", "true");
+  badge.setAttribute("title", "Linked owner email confirmed");
+  badge.innerHTML = `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="8" fill="#0064E0"/><path d="M11.2 6.2 7.4 10l-2.6-2.6 1.1-1.1 1.5 1.5 2.7-2.7z" fill="#fff"/></svg> Verified Owner`;
+  const title = card.querySelector(".agent-title");
+  if (title !== null) title.appendChild(badge);
+  else card.appendChild(badge);
 }
 
 $("modal-close").addEventListener("click", () => {

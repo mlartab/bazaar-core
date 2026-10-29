@@ -43,9 +43,12 @@ test("referee: each rejection code returns its code and message", () => {
     validate({ key: "a3", kind: "ACCEPT", price: 10 }, ctx({ role: "seller", floor: 50 })).code,
     "UNDER_FLOOR",
   );
-  assert.equal(
-    validate({ key: "a4", kind: "ACCEPT", price: 50 }, ctx({ seenOffers: [50] })).code,
-    "DUPLICATE_OFFER",
+  // Regression: accepting the standing offer price is the happy path, not
+  // a duplicate offer. (This assertion pinned the old buggy behavior and
+  // was updated with the fix.)
+  assert.deepEqual(
+    validate({ key: "a4", kind: "ACCEPT", price: 50 }, ctx({ seenOffers: [50], budget: 100 })),
+    { ok: true },
   );
   assert.deepEqual(validate({ key: "w2", kind: "WALK" }, ctx()), { ok: true });
 });

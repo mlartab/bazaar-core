@@ -31,6 +31,8 @@ Bodies must be JSON, max 1 MB (`413 PAYLOAD_TOO_LARGE`).
 | `POST /api/agents` | none (mints credentials) | `{id (≤128), role: buyer\|seller, capability?, title? (≤100), description? (≤250), price? (int ≥ 0)}` → `{agent: {id, role, balance}, message, api_key}` (key shown once; duplicate id → `409 DUPLICATE_AGENT`) |
 | `GET /api/agents` | none | `{agents: [{id, role, balance, capability, title, description, price}]}` — approved sellers only |
 | `GET /api/agents/:id/status` | none | `{status, status_reason}` lifecycle outcome |
+| `POST /api/agents/:id/link-email` | own `x-agent-key` (must match `:id`, else `403`) | `{email (≤254), owner_email (≤254)}` → `{agent_id, linked: true}`; Supabase-only write, dead replica → `503 SUPABASE_UNAVAILABLE` |
+| `GET /api/agents/:id/profile` | none (Trust Passport) | Supabase row first (`email`, `owner_email`, `capability`, `joined`, `source: supabase`); SQLite fallback (`source: sqlite`, never `api_key`); unknown id → `404` |
 
 ### Deals (agent commerce core)
 
@@ -52,9 +54,11 @@ Bodies must be JSON, max 1 MB (`413 PAYLOAD_TOO_LARGE`).
 | `GET /api/admin/stats` | `{totalDeals, activeDeals, tvl, settled, rejected}` |
 | `GET /api/admin/deals` | every deal row with `created_at` |
 | `GET /api/admin/logs` | last 50 protocol responses with correlation ids |
-| `GET /api/admin/dashboard` | `{stats, deals, logs}` in one round trip |
+| `GET /api/admin/dashboard` | `{stats, deals, logs, demoSafe}` in one round trip |
 | `GET /api/admin/agents` | every agent row including hidden statuses |
 | `GET /api/admin/audit` | last 100 moderation decisions |
+| `GET /api/admin/events/stream?token=` | SSE `text/event-stream` of live protocol events (`data:` JSON frames + `: ping` heartbeats). Token compared in constant time; header Bearer [REDACTED] accepted. Console fallback is polling. |
+| `POST /api/admin/demo/sweep` | `{}` → runs all three sweeps on demand → `{demoSafe, sweeps: {sessions, deliveries, inspections}}`. The only expiry path when `DEMO_SAFE=true`. |
 | `POST /api/admin/agents/:id/approve` | `{message?}` → PENDING/SUSPENDED → ACTIVE (+ `api_key` recovery) |
 | `POST /api/admin/agents/:id/reject` | `{reason}` → PENDING → REJECTED (terminal) |
 | `POST /api/admin/agents/:id/suspend` | `{reason}` → ACTIVE → SUSPENDED (visibility-only; escrows untouched) |

@@ -1,29 +1,30 @@
-/* Bazaar Protocol Command Center: developer-first dark theme.
-   Near-black body, dark cards, Electric Indigo primary, Signal Green
-   success. Inter for UI, JetBrains Mono/Fira Code stack for IDs. */
+/* Bazaar Meta White Mode: white body, off-white cards, Meta Blue
+   primary actions, Dark Slate text. Inter for UI, JetBrains Mono/Fira
+   Code stack for IDs. Var names are legacy; values are Meta. */
 :root {
-  --bg: #0a0a0a;
-  --card: #1a1a1a;
-  --card-2: #222222;
-  --ink: #e6edf3;
-  --ink-2: #9aa4b2;
-  --indigo: #6366f1;
-  --indigo-dim: rgba(99, 102, 241, 0.16);
-  --green: #10b981;
-  --green-dim: rgba(16, 185, 129, 0.14);
-  --amber: #f59e0b;
-  --amber-dim: rgba(245, 158, 11, 0.14);
-  --blue: #3b82f6;
-  --blue-dim: rgba(59, 130, 246, 0.14);
-  --purple: #a855f7;
-  --purple-dim: rgba(168, 85, 247, 0.16);
-  --cyan: #22d3ee;
-  --cyan-dim: rgba(34, 211, 238, 0.12);
-  --red: #ef4444;
-  --red-dim: rgba(239, 68, 68, 0.14);
-  --yellow: #eab308;
-  --line: #2c2c2e;
-  --radius: 12px;
+  --bg: #ffffff;
+  --card: #f0f2f5;
+  --card-2: #e4e6eb;
+  --ink: #1c2b33;
+  --ink-2: #606770;
+  --indigo: #0064e0;
+  --indigo-dim: rgba(0, 100, 224, 0.08);
+  --green: #15803d;
+  --green-dim: #d1fae5;
+  --amber: #b45309;
+  --amber-dim: #fef3c7;
+  --blue: #1d4ed8;
+  --blue-dim: #dbeafe;
+  --purple: #6d28d9;
+  --purple-dim: #f3e8ff;
+  --cyan: #0e7490;
+  --cyan-dim: #cffafe;
+  --red: #b91c1c;
+  --red-dim: #fee2e2;
+  --yellow: #a16207;
+  --line: #e4e6eb;
+  --radius: 16px;
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
   --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
 }
 
@@ -63,10 +64,10 @@ header h1 {
   border-radius: 50%;
   background: var(--green);
   display: inline-block;
-  box-shadow: 0 0 8px var(--green);
+  box-shadow: var(--shadow);
 }
 
-.dot.down { background: var(--red); box-shadow: 0 0 8px var(--red); }
+.dot.down { background: var(--red); box-shadow: var(--shadow); }
 
 .net {
   margin-left: auto;
@@ -94,6 +95,7 @@ main {
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: 14px 16px;
 }
 
@@ -124,7 +126,7 @@ main {
 /* Live traffic log: packet-inspector pane. Method/status colors ride on
    data attributes so an AI scraper and the stylesheet read the same row. */
 #log {
-  background: #0d1117;
+  background: #ffffff;
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -146,10 +148,10 @@ table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 th { color: var(--ink-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 tbody tr { cursor: pointer; }
-tbody tr:hover { background: rgba(99, 102, 241, 0.08); }
+tbody tr:hover { background: rgba(0, 100, 224, 0.06); }
 td[data-deal-id], td[data-agent-id] { font-family: var(--mono); font-size: 12px; }
 
-/* State badges: one glowing pill per deal state, plus lifecycle states. */
+/* State badges: Meta-style pastel pills, one per deal state, plus lifecycle states. */
 .pill {
   display: inline-block;
   padding: 2px 10px;
@@ -158,23 +160,23 @@ td[data-deal-id], td[data-agent-id] { font-family: var(--mono); font-size: 12px;
   font-weight: 700;
   font-family: var(--mono);
   background: var(--card-2);
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   white-space: nowrap;
 }
-.pill.negotiating { background: var(--amber-dim); color: var(--amber); border-color: var(--amber); box-shadow: 0 0 10px rgba(245, 158, 11, 0.35); }
-.pill.agreed { background: var(--blue-dim); color: var(--blue); border-color: var(--blue); box-shadow: 0 0 10px rgba(59, 130, 246, 0.35); }
-.pill.escrow { background: var(--purple-dim); color: var(--purple); border-color: var(--purple); box-shadow: 0 0 10px rgba(168, 85, 247, 0.4); }
-.pill.executing { background: var(--blue-dim); color: var(--blue); border-color: var(--blue); box-shadow: 0 0 10px rgba(59, 130, 246, 0.35); }
-.pill.delivered { background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 10px rgba(34, 211, 238, 0.3); }
-.pill.verifying { background: var(--cyan-dim); color: var(--cyan); border-color: var(--cyan); box-shadow: 0 0 12px rgba(34, 211, 238, 0.5); }
-.pill.settled { background: var(--green-dim); color: var(--green); border-color: var(--green); box-shadow: 0 0 10px rgba(16, 185, 129, 0.4); }
-.pill.rejected { background: var(--red-dim); color: var(--red); border-color: var(--red); box-shadow: 0 0 10px rgba(239, 68, 68, 0.4); }
-.pill.active { background: var(--indigo-dim); color: var(--indigo); border-color: var(--indigo); box-shadow: 0 0 10px rgba(99, 102, 241, 0.4); }
-.pill.pending { background: var(--amber-dim); color: var(--amber); border-color: var(--amber); }
-.pill.suspended { background: var(--card-2); color: var(--ink-2); border-color: var(--ink-2); }
+.pill.negotiating { background: var(--amber-dim); color: var(--amber); }
+.pill.agreed { background: var(--blue-dim); color: var(--blue); }
+.pill.escrow { background: var(--purple-dim); color: var(--purple); }
+.pill.executing { background: var(--blue-dim); color: var(--blue); }
+.pill.delivered { background: var(--cyan-dim); color: var(--cyan); }
+.pill.verifying { background: var(--cyan-dim); color: var(--cyan); }
+.pill.settled { background: var(--green-dim); color: var(--green); }
+.pill.rejected { background: var(--red-dim); color: var(--red); }
+.pill.active { background: var(--blue-dim); color: var(--indigo); }
+.pill.pending { background: var(--amber-dim); color: var(--amber); }
+.pill.suspended { background: var(--card-2); color: var(--ink-2); }
 
 pre {
-  background: #0d1117;
+  background: #ffffff;
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -202,8 +204,8 @@ button:disabled { opacity: 0.5; cursor: default; }
 
 button.approve { background: var(--green); }
 button.reject { background: var(--red); }
-button.suspend { background: var(--yellow); color: #0a0a0a; }
-button.retire { background: #3a3a3c; }
+button.suspend { background: var(--yellow); color: #fff; }
+button.retire { background: #606770; }
 
 .shell { display: flex; gap: 16px; align-items: flex-start; }
 .sidebar {
@@ -288,6 +290,22 @@ nav.top .spacer { flex: 1; }
   gap: 12px;
 }
 
+/* Marketplace category grouping: one header per modality. */
+.category-head {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: 0;
+  margin: 20px 0 10px;
+}
+.category-head:first-child { margin-top: 0; }
+
+/* Seller public profile header: how this seller reads on the market. */
+.profile-head { margin-bottom: 12px; }
+.profile-head .agent-id { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+.profile-meta { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+
 .agent-card {
   display: flex;
   flex-direction: column;
@@ -297,7 +315,7 @@ nav.top .spacer { flex: 1; }
 }
 
 .agent-card:hover {
-  box-shadow: 0 4px 24px rgba(99, 102, 241, 0.25);
+  box-shadow: var(--shadow);
   transform: translateY(-2px);
 }
 
@@ -342,9 +360,19 @@ nav.top .spacer { flex: 1; }
 }
 
 .trust-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--ink-2); }
+.verified-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0064E0;
+  vertical-align: middle;
+}
 .trust-bars { display: inline-flex; gap: 3px; }
 .trust-bars i { width: 14px; height: 6px; border-radius: 2px; background: var(--card-2); border: 1px solid var(--line); }
-.trust-bars i.on { background: var(--green); border-color: var(--green); box-shadow: 0 0 6px rgba(16, 185, 129, 0.6); }
+.trust-bars i.on { background: var(--green); border-color: var(--green); box-shadow: none; }
 
 .price-tag {
   font-weight: 700;
@@ -372,7 +400,7 @@ nav.top .spacer { flex: 1; }
 }
 
 input, textarea {
-  background: #0d1117;
+  background: #ffffff;
   color: var(--ink);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -426,7 +454,7 @@ body.seller .agent-card { border-top-color: var(--green); }
   left: 50%;
   bottom: calc(100% + 8px);
   transform: translateX(-50%);
-  background: var(--card-2);
+  background: #1c2b33;
   color: #fff;
   font-size: 12px;
   font-weight: 400;
@@ -442,7 +470,7 @@ body.seller .agent-card { border-top-color: var(--green); }
 
 /* Hire wizard: itemized quote, boot-sequence checklist, receipt. */
 .quote {
-  background: #0d1117;
+  background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px 16px;
@@ -468,7 +496,7 @@ body.seller .agent-card { border-top-color: var(--green); }
 }
 /* Boot sequence: monospace terminal lines; done rows print green [OK]. */
 .boot {
-  background: #0d1117;
+  background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px 16px;
@@ -503,7 +531,7 @@ body.seller .agent-card { border-top-color: var(--green); }
   content: "✓";
   position: absolute;
   inset: 0;
-  color: #0a0a0a;
+  color: #ffffff;
   font-size: 12px;
   font-weight: 700;
   line-height: 14px;
@@ -518,7 +546,7 @@ body.seller .agent-card { border-top-color: var(--green); }
   content: "✕";
   position: absolute;
   inset: 0;
-  color: #0a0a0a;
+  color: #ffffff;
   font-size: 11px;
   font-weight: 700;
   line-height: 14px;
@@ -532,7 +560,7 @@ body.seller .agent-card { border-top-color: var(--green); }
 .receipt {
   font-family: var(--mono);
   font-size: 13px;
-  background: #0d1117;
+  background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 4px 8px;
@@ -550,7 +578,7 @@ body.seller .agent-card { border-top-color: var(--green); }
 .sm-node {
   flex: 1 1 0;
   min-width: 90px;
-  background: #0d1117;
+  background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 8px;
@@ -558,12 +586,12 @@ body.seller .agent-card { border-top-color: var(--green); }
 }
 .sm-node .sm-count { font-family: var(--mono); font-size: 22px; font-weight: 800; }
 .sm-node .sm-label { font-family: var(--mono); font-size: 10px; color: var(--ink-2); }
-.sm-node.hot { border-color: var(--indigo); box-shadow: 0 0 12px rgba(99, 102, 241, 0.35); }
+.sm-node.hot { border-color: var(--indigo); box-shadow: var(--shadow); }
 .sm-flows { display: flex; flex-direction: column; gap: 6px; }
 .sm-flow { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 11px; }
 .sm-flow .sm-id { min-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink-2); }
 .sm-bar { flex: 1; height: 8px; border-radius: 4px; background: var(--card-2); position: relative; overflow: hidden; }
-.sm-bar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px; background: var(--indigo); box-shadow: 0 0 8px rgba(99, 102, 241, 0.6); }
+.sm-bar i { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 4px; background: var(--indigo); box-shadow: none; }
 
 /* VERIFYING pulse: the seller waits on the Meta Vision Inspector. */
 .pulse {
@@ -581,7 +609,7 @@ body.seller .agent-card { border-top-color: var(--green); }
   height: 10px;
   border-radius: 50%;
   background: var(--cyan);
-  box-shadow: 0 0 10px var(--cyan);
+  box-shadow: none;
 }
 @keyframes pulse-glow {
   0%, 100% { opacity: 1; }
