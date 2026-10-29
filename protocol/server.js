@@ -1119,11 +1119,11 @@ export function startServer({ dbPath, port = 0 } = {}) {
   const { server, store, sessions, stopIdemSweep } = createApp(dbPath);
   return new Promise((resolve, reject) => {
     server.on("error", reject);
-    server.listen(port, "127.0.0.1", () => {
+    server.listen(port, "0.0.0.0", () => {
       const address = server.address();
       const actual = typeof address === "object" && address !== null ? address.port : port;
       resolve({
-        url: `http://127.0.0.1:${actual}`,
+        url: `http://0.0.0.0:${actual}`,
         port: actual,
         close: () =>
           new Promise((done) => {
