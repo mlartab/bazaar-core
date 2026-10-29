@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
+import path from "node:path";
 import { startServer } from "./server.js";
 
 const PORT = Number(process.env.PORT ?? 3000);
