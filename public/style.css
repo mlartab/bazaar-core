@@ -622,3 +622,54 @@ body.seller .agent-card { border-top-color: var(--green); }
   padding: 10px 14px;
   margin-top: 10px;
 }
+
+/* Marketplace upgrade: sticky category headers, sidebar layout, and a
+   high-contrast pill Hire action in Meta Blue. */
+.market-main { flex: 1; min-width: 0; }
+.market-main h1 { margin-top: 0; }
+.category-head {
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+  padding: 8px 0;
+  z-index: 5;
+}
+#category-nav { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+#category-nav .navlink { border-radius: 100px; }
+.hire-btn {
+  background: #0064E0;
+  border-radius: 100px;
+  padding: 10px 22px;
+  font-size: 14px;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 100, 224, 0.35);
+}
+.hire-btn:hover { filter: brightness(1.08); }
+
+/* Illustrated empty state for categories with no agents yet. */
+.empty-state {
+  text-align: center;
+  padding: 40px 20px;
+  color: var(--ink-2);
+}
+.empty-state p { font-size: 15px; margin: 12px 0 0; }
+
+/* Seller storefront: listings group, modal form fields. */
+.storefront-head { margin-bottom: 16px; }
+.storefront-head .category-head {
+  position: static;
+  font-size: 13px;
+  margin: 14px 0 8px;
+}
+.storefront-head .category-head:first-of-type { margin-top: 10px; }
+.modal-card select, .modal-card textarea {
+  width: 100%;
+  margin: 6px 0 12px;
+  background: #ffffff;
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 16px;
+  font: inherit;
+}
+body.seller #new-listing-btn { background: #0064E0; }

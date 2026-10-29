@@ -248,8 +248,14 @@ test("protocol: listing fields are length- and range-checked", async () => {
   const long = (n) => "x".repeat(n);
   for (const body of [
     { id: "t1", role: "seller", title: long(101) },
+    { id: "t1b", role: "seller", title: long(61) },
+    { id: "t1c", role: "seller", title: "Hi" },
     { id: "t2", role: "seller", description: long(300) },
+    { id: "t2b", role: "seller", description: long(251) },
+    { id: "t2c", role: "seller", description: "too short" },
     { id: "t3", role: "seller", price: -1 },
+    { id: "t3b", role: "seller", price: 0 },
+    { id: "t3c", role: "seller", price: 100001 },
     { id: "t4", role: "seller", price: 1.5 },
     { id: "t5", role: "seller", price: "50" },
   ]) {
@@ -257,16 +263,16 @@ test("protocol: listing fields are length- and range-checked", async () => {
     assert.equal(s, 400, JSON.stringify(body).slice(0, 40));
     assert.equal(b.error.code, "INVALID_SCHEMA", JSON.stringify(body).slice(0, 40));
   }
-  // Boundary values pass: exactly 100/250 chars and a zero price.
-  const [ok, okBody] = await post("/api/agents", {
-    id: "t-ok",
-    role: "seller",
-    title: long(100),
-    description: long(250),
-    price: 0,
-  });
-  assert.equal(ok, 200);
-  assert.equal(okBody.result.agent.id, "t-ok");
+  // Boundary values pass: exactly 5/60-char titles, 20/250-char
+  // descriptions, and prices 1 and 100000.
+  for (const [id, body] of [
+    ["t-ok", { title: long(5), description: long(20), price: 1 }],
+    ["t-ok-2", { title: long(60), description: long(250), price: 100000 }],
+  ]) {
+    const [ok, okBody] = await post("/api/agents", { id, role: "seller", ...body });
+    assert.equal(ok, 200, JSON.stringify(body).slice(0, 40));
+    assert.equal(okBody.result.agent.id, id);
+  }
 });
 
 test("protocol: a full listing is stored and listed after approval", async () => {
@@ -334,7 +340,7 @@ test("protocol: PATCH edits listing fields and rejects unknowns", async () => {
   const [sEmpty, bEmpty] = await patch("listed1", {});
   assert.equal(sEmpty, 400);
   assert.equal(bEmpty.error.code, "BAD_PATCH");
-  const [sMissing] = await patch("ghost", { title: "x" });
+  const [sMissing] = await patch("ghost", { title: "Ghost Listing" });
   assert.equal(sMissing, 404);
 });
 

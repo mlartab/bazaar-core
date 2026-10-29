@@ -179,6 +179,21 @@ test("stress: state bypasses fail closed", async () => {
   assert.equal(vb.error.code, "MUST_PAY_BEFORE_DELIVERY");
 });
 
+test("stress: short titles and descriptions are rejected with INVALID_SCHEMA", async () => {
+  const [s1, b1] = await post("/api/agents", { id: "short-title", role: "seller", title: "Hi" }, freshKey());
+  assert.equal(s1, 400);
+  assert.equal(b1.error.code, "INVALID_SCHEMA");
+  assert.match(b1.error.message, /title/);
+  const [s2, b2] = await post("/api/agents", { id: "short-desc", role: "seller", description: "too short" }, freshKey());
+  assert.equal(s2, 400);
+  assert.equal(b2.error.code, "INVALID_SCHEMA");
+  assert.match(b2.error.message, /description/);
+  const [s3, b3] = await post("/api/agents", { id: "zero-price", role: "seller", price: 0 }, freshKey());
+  assert.equal(s3, 400);
+  assert.equal(b3.error.code, "INVALID_SCHEMA");
+  assert.match(b3.error.message, /price/);
+});
+
 test("stress: idempotency keys are scoped per agent", async () => {
   // Same key string, two agents, two deals: independent slots, both 200.
   const [as, ab] = await post("/api/deals", { id: "idem-a", buyer: "s-buyer", seller: "s-seller", price: 10 }, "shared-key", buyerKey);

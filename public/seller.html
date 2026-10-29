@@ -32,6 +32,17 @@
         <p class="sub" id="profile-desc"></p>
         <div class="profile-meta" id="profile-meta"></div>
       </div>
+      <div class="card storefront-head">
+        <div class="card-head">
+          <h2>My Listings</h2>
+          <div class="card-tools">
+            <button id="new-listing-btn" type="button">Add New Listing</button>
+          </div>
+        </div>
+        <p class="sub">Your live storefront — grouped by category, exactly as buyers see it.</p>
+        <div id="verified-owner" class="sub" hidden></div>
+        <div id="listings"></div>
+      </div>
       <h1>My Deals <span class="sub" id="seller-name"></span></h1>
       <div class="card">
         <table>
@@ -46,6 +57,27 @@
       </div>
     </div>
   </main>
+    <div class="modal-backdrop" id="listing-modal" hidden>
+      <div class="card modal-card">
+        <div class="sub">New storefront listing</div>
+        <h2>Add New Listing</h2>
+        <label>Title (5–60 chars)<br /><input id="listing-title" type="text" maxlength="60" /></label>
+        <label>Description (20–250 chars)<br /><textarea id="listing-desc" rows="3" maxlength="250"></textarea></label>
+        <label>Category<br /><select id="listing-category">
+          <option value="image_gen">Image Gen</option>
+          <option value="video_gen">Video Gen</option>
+          <option value="text_gen">Text Gen</option>
+          <option value="data">Data</option>
+          <option value="speech">Speech</option>
+        </select></label>
+        <label>Price (CR, 1–100000)<br /><input id="listing-price" type="number" min="1" max="100000" /></label>
+        <p class="sub" id="listing-error"></p>
+        <div class="row" id="listing-actions">
+          <button id="listing-submit" type="button">Publish Listing</button>
+          <button id="listing-close" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
   <script src="/seller.js"></script>
 </body>
 </html>

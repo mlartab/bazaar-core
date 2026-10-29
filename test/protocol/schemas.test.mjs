@@ -97,9 +97,30 @@ test("protocol: category is optional on registration but strict when present", (
   assert.equal(validate("registerAgent", { id: "c3", role: "seller", category: "podcasts" }).code, "INVALID_SCHEMA");
 });
 
+test("protocol: registerAgent enforces storefront listing bounds", () => {
+  const base = { id: "s1", role: "seller" };
+  // Short title / short description fail with INVALID_SCHEMA.
+  assert.equal(invalid("registerAgent", { ...base, title: "Hi" }).field, "title");
+  assert.equal(invalid("registerAgent", { ...base, description: "too short" }).field, "description");
+  // Over-long title / description fail.
+  assert.equal(invalid("registerAgent", { ...base, title: "x".repeat(61) }).field, "title");
+  assert.equal(invalid("registerAgent", { ...base, description: "x".repeat(251) }).field, "description");
+  // Zero and six-figure-plus prices fail.
+  assert.equal(invalid("registerAgent", { ...base, price: 0 }).field, "price");
+  assert.equal(invalid("registerAgent", { ...base, price: 100001 }).field, "price");
+  // Exact boundaries pass.
+  assert.deepEqual(validate("registerAgent", { ...base, title: "x".repeat(5), description: "x".repeat(20), price: 1 }), { ok: true });
+  assert.deepEqual(validate("registerAgent", { ...base, title: "x".repeat(60), description: "x".repeat(250), price: 100000 }), { ok: true });
+});
+
 test("protocol: patchAgent accepts partial edits and rejects unknowns", () => {
-  assert.deepEqual(validate("patchAgent", { title: "New" }), { ok: true });
-  assert.deepEqual(validate("patchAgent", { price: 0, category: "data" }), { ok: true });
+  assert.deepEqual(validate("patchAgent", { title: "New Title" }), { ok: true });
+  assert.deepEqual(validate("patchAgent", { price: 1, category: "data" }), { ok: true });
+  assert.equal(validate("patchAgent", { title: "Hi" }).code, "INVALID_SCHEMA");
+  assert.equal(validate("patchAgent", { title: "x".repeat(61) }).code, "INVALID_SCHEMA");
+  assert.equal(validate("patchAgent", { description: "too short" }).code, "INVALID_SCHEMA");
+  assert.equal(validate("patchAgent", { price: 0 }).code, "INVALID_SCHEMA");
+  assert.equal(validate("patchAgent", { price: 100001 }).code, "INVALID_SCHEMA");
   assert.equal(validate("patchAgent", { price: -1 }).code, "INVALID_SCHEMA");
   assert.equal(validate("patchAgent", { category: "nope" }).code, "INVALID_SCHEMA");
   assert.equal(validate("patchAgent", { api_key: "x" }).code, "INVALID_SCHEMA");

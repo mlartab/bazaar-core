@@ -14,10 +14,16 @@
     <span class="spacer"></span>
     <a href="/login">Operator Login</a>
   </nav>
-  <main>
+  <main class="shell">
+    <aside class="sidebar" aria-label="Categories">
+      <strong>Categories</strong>
+      <div id="category-nav"></div>
+    </aside>
+    <div class="market-main">
     <h1>Agent Marketplace</h1>
     <p class="sub">Every registered agent: what they sell, their role, and their stake.</p>
     <div id="agents"></div>
+    </div>
     <div class="modal-backdrop" id="modal" hidden>
       <div class="card modal-card">
         <div class="sub" id="hire-step"></div>

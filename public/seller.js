@@ -95,11 +95,87 @@ async function renderProfile(me) {
   }
 }
 
+const CATEGORY_LABELS = {
+  image_gen: "Image Gen",
+  video_gen: "Video Gen",
+  text_gen: "Text Gen",
+  data: "Data",
+  speech: "Speech",
+};
+
+const categoryLabel = (c) => CATEGORY_LABELS[c] ?? "Uncategorized";
+
+// Storefront: every approved listing under this seller's namespace — the
+// seller's own record plus any `${id}:suffix` sub-listings created from the
+// Add New Listing modal — grouped by category like the marketplace.
+async function renderStorefront(me) {
+  const box = $("listings");
+  try {
+    const res = await fetch("/api/agents");
+    if (!res.ok) throw new Error(`GET /api/agents -> ${res.status}`);
+    const { result } = await res.json();
+    const mine = result.agents.filter((a) => a.id === me.id || a.id.startsWith(`${me.id}:`));
+    if (mine.length === 0) {
+      box.innerHTML = `<p class="sub">No live listings yet. New listings appear here after operator approval.</p>`;
+      return;
+    }
+    const groups = new Map();
+    for (const a of mine) {
+      const key = typeof a.category === "string" && a.category !== "" ? a.category : "Uncategorized";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(a);
+    }
+    box.innerHTML = [...groups]
+      .map(
+        ([category, agents]) =>
+          `<h3 class="category-head" data-category="${esc(category)}">${esc(categoryLabel(category))}</h3>` +
+          `<div class="agent-grid" data-category="${esc(category)}">` +
+          agents
+            .map(
+              (a) =>
+                `<div class="card agent-card" data-agent-id="${esc(a.id)}" data-category="${esc(a.category ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-title="${esc(a.title ?? a.id)}">` +
+                `<h2 class="agent-title" title="${esc(a.title ?? a.id)}">${esc(a.title ?? a.id)}</h2>` +
+                `<div class="agent-id">${esc(a.id)}</div>` +
+                `<p class="agent-desc" title="${esc(a.description ?? "")}">${esc(a.description ?? "No description yet.")}</p>` +
+                `<div class="agent-foot">${priceTag(a.price)}</div>` +
+                `</div>`,
+            )
+            .join("") +
+          `</div>`,
+      )
+      .join("");
+  } catch {
+    box.innerHTML = `<p class="sub">Could not load listings.</p>`;
+  }
+  // Verified Owner: the profile carries the linked owner email when the
+  // seller completed self-serve identity linking.
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(me.id)}/profile`);
+    if (!res.ok) return;
+    const { result } = await res.json();
+    if (result !== undefined && (result.email !== null || result.owner_email !== null)) {
+      const badge = $("verified-owner");
+      badge.hidden = false;
+      badge.innerHTML =
+        `<span class="verified-badge" data-verified-owner="true" title="Linked owner email confirmed">` +
+        `<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="8" fill="#0064E0"/><path d="M11.2 6.2 7.4 10l-2.6-2.6 1.1-1.1 1.5 1.5 2.7-2.7z" fill="#fff"/></svg> Verified Owner</span>`;
+    }
+  } catch {
+    // Offline replica: no badge, listings above still stand.
+  }
+}
+
+function priceTag(price) {
+  if (Number.isInteger(price)) return `<span class="price-tag">${price} CR</span>`;
+  return `<span class="price-tag missing">Price on request</span>`;
+}
+
 async function load() {
   const me = identity();
   if (me === null) return;
   $("seller-name").textContent = `— ${me.id}`;
   renderProfile(me).catch(() => {});
+  renderStorefront(me).catch(() => {});
   const { result } = await api("/api/deals");
   const mine = result.deals.filter((d) => d.seller === me.id);
   if (result.deals.length > 0 && mine.length === 0) {
@@ -249,6 +325,57 @@ $("gate-login").addEventListener("click", async () => {
 });
 
 $("logout").addEventListener("click", logout);
+
+// Add New Listing modal: Meta Blue card, same storefront bounds as the
+// protocol schema. The listing registers under the seller's namespace
+// (`seller-id:slug`) and enters the operator review queue like any agent.
+$("new-listing-btn").addEventListener("click", () => {
+  $("listing-error").textContent = "";
+  $("listing-modal").hidden = false;
+});
+
+$("listing-close").addEventListener("click", () => {
+  $("listing-modal").hidden = true;
+});
+
+$("listing-submit").addEventListener("click", async () => {
+  const me = identity();
+  if (me === null) return;
+  const title = $("listing-title").value.trim();
+  const description = $("listing-desc").value.trim();
+  const category = $("listing-category").value;
+  const price = Number($("listing-price").value);
+  $("listing-error").textContent = "";
+  if (title.length < 5 || title.length > 60) {
+    $("listing-error").textContent = "Title must be 5–60 characters.";
+    return;
+  }
+  if (description.length < 20 || description.length > 250) {
+    $("listing-error").textContent = "Description must be 20–250 characters.";
+    return;
+  }
+  if (!Number.isInteger(price) || price < 1 || price > 100000) {
+    $("listing-error").textContent = "Price must be a whole number from 1 to 100000 CR.";
+    return;
+  }
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "listing";
+  try {
+    const data = await api("/api/agents", {
+      method: "POST",
+      body: { id: `${me.id}:${slug}-${Date.now().toString(36)}`, role: "seller", title, description, price, category },
+    });
+    $("listing-modal").hidden = true;
+    $("listing-title").value = "";
+    $("listing-desc").value = "";
+    $("listing-error").textContent = "";
+    $("detail").textContent =
+      `Listing ${data.result.agent.id} registered and queued for operator approval. ` +
+      `Manage it with API key: ${data.result.api_key} (shown once).`;
+    await load();
+  } catch (err) {
+    $("listing-error").textContent = err.message;
+  }
+});
 
 if (identity() !== null) {
   $("gate").hidden = true;

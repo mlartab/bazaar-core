@@ -242,6 +242,50 @@ async function stepPay() {
   }
 }
 
+// Sidebar: one button per category plus All. Clicking filters the grid to
+// that category's section; an empty section prints the illustrated empty
+// state instead of blank space.
+function renderCategoryNav(categories) {
+  const nav = $("category-nav");
+  if (nav === null) return;
+  const btn = (label, category) =>
+    `<button class="navlink${category === null ? " active" : ""}" data-filter="${category === null ? "" : esc(category)}">${esc(label)}</button>`;
+  nav.innerHTML =
+    btn("All categories", null) + categories.map((c) => btn(c, c)).join("");
+  for (const b of nav.querySelectorAll(".navlink")) {
+    b.addEventListener("click", () => {
+      for (const other of nav.querySelectorAll(".navlink")) other.classList.remove("active");
+      b.classList.add("active");
+      filterCategory(b.dataset.filter);
+    });
+  }
+}
+
+function filterCategory(category) {
+  const grid = $("agents");
+  let visible = 0;
+  for (const section of grid.querySelectorAll("[data-section]")) {
+    const show = category === "" || section.dataset.section === category;
+    section.hidden = !show;
+    if (show) visible += 1;
+  }
+  let empty = $("agents-empty");
+  if (visible === 0) {
+    if (empty === null) {
+      empty = document.createElement("div");
+      empty.id = "agents-empty";
+      empty.className = "card empty-state";
+      empty.innerHTML =
+        `<svg width="48" height="48" viewBox="0 0 48 48" aria-hidden="true"><rect x="8" y="14" width="32" height="22" rx="4" fill="none" stroke="#0064E0" stroke-width="2"/><path d="M8 22h32" stroke="#0064E0" stroke-width="2"/><circle cx="24" cy="31" r="3" fill="none" stroke="#0064E0" stroke-width="2"/></svg>` +
+        `<p>No agents available in this category yet.</p>`;
+      grid.appendChild(empty);
+    }
+    empty.hidden = false;
+  } else if (empty !== null) {
+    empty.hidden = true;
+  }
+}
+
 async function load() {
   const grid = $("agents");
   try {
@@ -260,12 +304,13 @@ async function load() {
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(a);
     }
+    renderCategoryNav([...groups.keys()]);
     grid.innerHTML = [...groups]
       .map(
-        ([category, agents]) => `<h2 class="category-head" data-category="${esc(category)}">${esc(category)}</h2>
+        ([category, agents]) => `<section data-section="${esc(category)}"><h2 class="category-head" data-category="${esc(category)}">${esc(category)}</h2>
         <div class="agent-grid" data-category="${esc(category)}">${agents
           .map(
-            (a) => `<div class="card agent-card" data-agent-id="${esc(a.id)}" data-role="${esc(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-category="${esc(a.category ?? "")}">
+            (a) => `<div class="card agent-card" data-agent-id="${esc(a.id)}" data-role="${esc(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-category="${esc(a.category ?? "")}" data-title="${esc(a.title ?? a.id)}">
           <div class="term-head">GET /api/agents/${esc(a.id)}</div>
           <h2 class="agent-title" title="${esc(a.title ?? a.id)}">${esc(a.title ?? a.id)}</h2>
           <div class="agent-id">${esc(a.id)}</div>
@@ -274,7 +319,7 @@ async function load() {
           <div class="agent-foot">${priceTag(a.price)}<button class="hire-btn" data-id="${esc(a.id)}" data-price="${Number.isInteger(a.price) ? a.price : ""}">Hire Agent</button></div>
         </div>`,
           )
-          .join("")}</div>`,
+          .join("")}</div></section>`,
       )
       .join("");
     for (const btn of grid.querySelectorAll(".hire-btn")) {

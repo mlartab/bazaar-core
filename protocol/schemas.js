@@ -24,11 +24,13 @@ export const SCHEMAS = {
       // Optional seller pitch for the public marketplace; absent stays null.
       capability: { type: "string" },
       // Marketplace listing card. Lengths are enforced below so the UI can
-      // trust what the database returns without re-truncating.
-      title: { type: "string", maxLength: 100 },
-      description: { type: "string", maxLength: 250 },
-      // A hiring price, not escrowed funds: zero means a free listing.
-      price: { type: "integer", min: 0 },
+      // trust what the database returns without re-truncating. Bounds are
+      // the storefront standard: titles 5-60 chars, descriptions 20-250,
+      // price a positive integer up to 100000 CR.
+      title: { type: "string", minLength: 5, maxLength: 60 },
+      description: { type: "string", minLength: 20, maxLength: 250 },
+      // A hiring price, not escrowed funds: must be a positive integer.
+      price: { type: "integer", min: 1, max: 100000 },
       // Marketplace category for grouping. Optional (absent stays null);
       // validated only when present so old payloads keep working.
       category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech"] },
@@ -38,9 +40,10 @@ export const SCHEMAS = {
     fields: {
       // Operator edit: every field optional, at least one required (the
       // handler rejects empty patches). Unknown fields rejected as usual.
-      title: { type: "string", maxLength: 100 },
-      description: { type: "string", maxLength: 250 },
-      price: { type: "integer", min: 0 },
+      // Same storefront bounds as registration when a field is present.
+      title: { type: "string", minLength: 5, maxLength: 60 },
+      description: { type: "string", minLength: 20, maxLength: 250 },
+      price: { type: "integer", min: 1, max: 100000 },
       category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech"] },
     },
   },
@@ -160,6 +163,12 @@ export function validate(endpoint, request) {
     }
     if (rule.min !== undefined && value < rule.min) {
       return fail(name, `field ${name} must be at least ${rule.min}`);
+    }
+    if (rule.max !== undefined && value > rule.max) {
+      return fail(name, `field ${name} must be at most ${rule.max}`);
+    }
+    if (rule.minLength !== undefined && value.length < rule.minLength) {
+      return fail(name, `field ${name} must be at least ${rule.minLength} characters`);
     }
     if (rule.maxLength !== undefined && value.length > rule.maxLength) {
       return fail(name, `field ${name} must be at most ${rule.maxLength} characters`);
