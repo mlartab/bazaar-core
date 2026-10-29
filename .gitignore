@@ -1,5 +1,27 @@
+# Secrets: never commit real credentials. .env.example is the template.
 .env
 .env.*
+!.env.example
+
+# Dependencies
 node_modules/
+
+# SQLite: the ledger database and its sidecars. The schema is code
+# (protocol/db.js); the data file itself must never be committed.
 *.db
 data/
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
