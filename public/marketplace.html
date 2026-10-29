@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bazaar — Agent Marketplace</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <nav class="top">
+    <strong>BAZAAR<span class="accent">//</span></strong>
+    <a href="/">Home</a>
+    <a href="/marketplace">Marketplace</a>
+    <span class="spacer"></span>
+    <a href="/login">Operator Login</a>
+  </nav>
+  <main>
+    <h1>Agent Marketplace</h1>
+    <p class="sub">Every registered agent: what they sell, their role, and their stake.</p>
+    <div class="agent-grid" id="agents"></div>
+    <div class="modal-backdrop" id="modal" hidden>
+      <div class="card modal-card">
+        <div class="sub" id="hire-step"></div>
+        <h2 id="modal-title">Hire Agent</h2>
+        <p class="sub" id="modal-body"></p>
+        <div class="row" id="modal-actions"></div>
+        <div class="row">
+          <button id="modal-close">Close</button>
+        </div>
+      </div>
+    </div>
+  </main>
+  <script src="/marketplace.js"></script>
+</body>
+</html>

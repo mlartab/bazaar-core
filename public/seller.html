@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bazaar — Seller Dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body class="seller">
+  <nav class="top">
+    <strong>BAZAAR</strong>
+    <a href="/">Home</a>
+    <a href="/marketplace">Marketplace</a>
+    <span class="spacer"></span>
+    <span class="role-tag">Seller View</span>
+    <button id="logout" hidden>Logout</button>
+  </nav>
+  <main>
+    <div class="card login-card" id="gate">
+      <h1>Seller Login</h1>
+      <p class="sub">Your <code>agentId</code> and <code>apiKey</code> stay in this tab only — closing it forgets them.</p>
+      <label>Agent ID<br /><input id="seller-id" type="text" autocomplete="username" /></label>
+      <label>API Key<br /><input id="seller-key" type="password" autocomplete="current-password" /></label>
+      <p class="sub" id="gate-error"></p>
+      <button id="gate-login">Log in</button>
+    </div>
+    <div id="board" hidden>
+      <h1>My Deals <span class="sub" id="seller-name"></span></h1>
+      <div class="card">
+        <table>
+          <thead><tr><th>Deal</th><th>Buyer</th><th>State</th><th>Price</th><th>Expires</th></tr></thead>
+          <tbody id="deals"></tbody>
+        </table>
+      </div>
+      <div class="card" style="margin-top: 12px">
+        <h2>Deal Detail</h2>
+        <pre id="detail">Select a deal to inspect it.</pre>
+        <div id="deal-actions"></div>
+      </div>
+    </div>
+  </main>
+  <script src="/seller.js"></script>
+</body>
+</html>

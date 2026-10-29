@@ -10,22 +10,45 @@
 export const SCHEMAS = {
   registerAgent: {
     fields: {
-      id: { type: "string", required: true, nonEmpty: true },
+      // Identifiers are bounded everywhere: an unbounded id is a storage
+      // and index abuse vector, and nothing legitimate needs more.
+      id: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       role: { type: "string", required: true, allowed: ["buyer", "seller"] },
+      // Optional seller pitch for the public marketplace; absent stays null.
+      capability: { type: "string" },
+      // Marketplace listing card. Lengths are enforced below so the UI can
+      // trust what the database returns without re-truncating.
+      title: { type: "string", maxLength: 100 },
+      description: { type: "string", maxLength: 250 },
+      // A hiring price, not escrowed funds: zero means a free listing.
+      price: { type: "integer", min: 0 },
+    },
+  },
+  reviewNote: {
+    fields: {
+      // Optional approval note; shown back to the agent on the status endpoint.
+      message: { type: "string" },
+    },
+  },
+  moderationNote: {
+    fields: {
+      // Rejections, suspensions, and retirements must say why: the reason
+      // is surfaced to the agent and written to the audit log.
+      reason: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
     },
   },
   openDeal: {
     fields: {
-      id: { type: "string", required: true, nonEmpty: true },
-      buyer: { type: "string", required: true, nonEmpty: true },
-      seller: { type: "string", required: true, nonEmpty: true },
+      id: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
+      buyer: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
+      seller: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       price: { type: "integer", required: true, min: 1 },
     },
   },
   move: {
     fields: {
-      dealId: { type: "string", required: true, nonEmpty: true },
-      key: { type: "string", required: true, nonEmpty: true },
+      dealId: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
+      key: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       kind: { type: "string", required: true, allowed: ["OFFER", "ACCEPT", "WALK"] },
       // A priced move locks funds, so the amount must be present; a WALK
       // locks nothing, so any price on it is a client bug, not a discount.
@@ -39,10 +62,18 @@ export const SCHEMAS = {
   },
   delivery: {
     fields: {
-      id: { type: "string", required: true, nonEmpty: true },
-      dealId: { type: "string", required: true, nonEmpty: true },
-      status: { type: "string", required: true, allowed: ["PENDING", "SENT", "DELIVERED"] },
+      id: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
+      dealId: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
+      // Opaque deliverable reference for the async AI Inspector. The server
+      // never fetches it in this slice (see inspector.js TODO); the client
+      // must never decide the verdict, so no status field is accepted here.
+      deliveryUrl: { type: "string", required: true, nonEmpty: true, maxLength: 2048 },
     },
+  },
+  // x402 capture handshake: the URL names the deal, so the body carries
+  // nothing. Any field present is a client bug, rejected as unknown.
+  pay: {
+    fields: {},
   },
 };
 
@@ -97,6 +128,9 @@ export function validate(endpoint, request) {
     }
     if (rule.min !== undefined && value < rule.min) {
       return fail(name, `field ${name} must be at least ${rule.min}`);
+    }
+    if (rule.maxLength !== undefined && value.length > rule.maxLength) {
+      return fail(name, `field ${name} must be at most ${rule.maxLength} characters`);
     }
     if (rule.allowed !== undefined && !rule.allowed.includes(value)) {
       return fail(name, `field ${name} must be one of: ${rule.allowed.join(", ")}`);

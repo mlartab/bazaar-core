@@ -15,13 +15,20 @@ let url;
 let stop;
 let dir;
 let n = 0;
+let buyerKey;
+let sellerKey;
 
 const freshKey = () => `key-${(n += 1)}`;
 
-async function post(p, body, k = freshKey()) {
+// Mutating protocol routes authenticate the caller: the key defaults to the
+// buyer's, and registration calls pass none (keys are undefined until
+// before() captures them, which is exactly when no key is needed).
+async function post(p, body, k = freshKey(), agentKey = buyerKey) {
+  const headers = { "content-type": "application/json", "idempotency-key": k };
+  if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
   const res = await fetch(url + p, {
     method: "POST",
-    headers: { "content-type": "application/json", "idempotency-key": k },
+    headers,
     body: JSON.stringify(body),
   });
   return [res.status, await res.json()];
@@ -36,9 +43,22 @@ async function postNoKey(p, body) {
   return [res.status, await res.json()];
 }
 
-async function get(p) {
-  const res = await fetch(url + p);
+async function get(p, agentKey = buyerKey) {
+  const headers = agentKey === undefined ? {} : { "x-agent-key": agentKey };
+  const res = await fetch(url + p, { headers });
   return [res.status, await res.json()];
+}
+
+// The inspector settles in the background after the 202: poll the deal
+// until it leaves VERIFYING or the budget runs out.
+async function waitForState(id, states, agentKey = buyerKey, tries = 50) {
+  for (let i = 0; i < tries; i += 1) {
+    const [status, body] = await get(`/api/deals/${id}`, agentKey);
+    assert.equal(status, 200);
+    if (states.includes(body.state)) return body;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`deal ${id} never reached ${states.join("/")}`);
 }
 
 function assertOk(body) {
@@ -62,9 +82,11 @@ before(async () => {
   const [s1, b1] = await post("/api/agents", { id: "buyer", role: "buyer" });
   assert.equal(s1, 200);
   assertOk(b1);
+  buyerKey = b1.result.api_key;
   const [s2, b2] = await post("/api/agents", { id: "seller", role: "seller" });
   assert.equal(s2, 200);
   assertOk(b2);
+  sellerKey = b2.result.api_key;
 });
 
 after(async () => {
@@ -77,6 +99,37 @@ test("protocol: server registers an agent", async () => {
   assert.equal(status, 200);
   assertOk(body);
   assert.deepEqual(body.result.agent, { id: "buyer2", role: "buyer", balance: 0 });
+});
+
+test("protocol: server lists agents with capabilities", async () => {
+  const [s0, b0] = await post("/api/agents", { id: "seller2", role: "seller", capability: "GPU rendering" });
+  assert.equal(s0, 200);
+  assertOk(b0);
+  // POST response shape is frozen for existing readers: no capability field,
+  // only the queue notice beside it.
+  assert.deepEqual(b0.result.agent, { id: "seller2", role: "seller", balance: 0 });
+  assert.equal(b0.result.message, "Agent registered successfully. Your listing is currently in the review queue.");
+  // Fresh listings are pending, so the public list hides them until approval.
+  const hidden = await (await fetch(url + "/api/agents")).json();
+  assert.ok(!hidden.result.agents.some((a) => a.id === "seller2"));
+  process.env.ADMIN_SECRET = "test-admin-secret";
+  const approve = await fetch(url + "/api/admin/agents/seller2/approve", {
+    method: "POST",
+    headers: { "content-type": "application/json", "idempotency-key": "approve-seller2", authorization: "Bearer test-admin-secret" },
+    body: JSON.stringify({ message: "looks good" }),
+  });
+  assert.equal(approve.status, 200);
+  const res = await fetch(url + "/api/agents");
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assertOk(body);
+  const byId = Object.fromEntries(body.result.agents.map((a) => [a.id, a]));
+  assert.equal(byId["seller2"].capability, "GPU rendering");
+  for (const agent of body.result.agents) {
+    for (const field of ["id", "role", "balance", "capability"]) {
+      assert.ok(field in agent, field);
+    }
+  }
 });
 
 test("protocol: server rejects a POST without an idempotency key", async () => {
@@ -153,7 +206,7 @@ test("protocol: server rejects a move in the wrong state", async () => {
   await post("/api/deals/d-state/moves", { key: "k1", kind: "OFFER", price: 50 });
   await post("/api/deals/d-state/moves", { key: "k2", kind: "ACCEPT", price: 40 });
   const [status, body] = await post("/api/deals/d-state/moves", { key: "k3", kind: "OFFER", price: 40 });
-  assert.equal(status, 400);
+  assert.equal(status, 409);
   assertErr(body, "WRONG_STATE");
 });
 
@@ -167,31 +220,94 @@ test("protocol: server rejects schema violations on moves", async () => {
   assertErr(b2, "INVALID_SCHEMA");
 });
 
-test("protocol: server runs delivery to SETTLED and pays the seller", async () => {
+test("protocol: server accepts delivery with 202 and the inspector settles", async () => {
   await post("/api/deals", { id: "d-settle", buyer: "buyer", seller: "seller", price: 50 });
   await post("/api/deals/d-settle/moves", { key: "k1", kind: "OFFER", price: 50 });
   await post("/api/deals/d-settle/moves", { key: "k2", kind: "ACCEPT", price: 40 });
-  const states = [];
-  for (let i = 1; i <= 4; i += 1) {
-    const [status, body] = await post("/api/deals/d-settle/delivery", {
-      id: `del-${i}`,
-      dealId: "d-settle",
-      status: "SENT",
-    });
-    assert.equal(status, 200);
-    states.push(body.state);
-  }
-  assert.deepEqual(states, ["ESCROW_LOCKED", "EXECUTING", "DELIVERED", "VERIFYING"]);
-  const [fs_, fb] = await post("/api/deals/d-settle/delivery", {
-    id: "del-5",
-    dealId: "d-settle",
-    status: "DELIVERED",
-  });
-  assert.equal(fs_, 200);
-  assert.equal(fb.state, "SETTLED");
+  await post("/api/deals/d-settle/pay", {});
+  // Delivery is seller-only: the submit carries the seller's key.
+  const [status, body] = await post(
+    "/api/deals/d-settle/delivery",
+    { id: "del-1", dealId: "d-settle", deliveryUrl: "deliverable:del-1" },
+    freshKey(),
+    sellerKey,
+  );
+  assert.equal(status, 202);
+  assertOk(body);
+  assert.equal(body.state, "VERIFYING");
+  assert.deepEqual(body.result.delivery, { id: "del-1", dealId: "d-settle", deliveryUrl: "deliverable:del-1" });
+  // The chained walk emitted one event per hop on the way to VERIFYING.
+  const settled = await waitForState("d-settle", ["SETTLED"]);
+  assert.equal(settled.state, "SETTLED");
   const [, eb] = await get("/api/events");
-  const settled = eb.result.events.find((e) => e.type === "SETTLED" && e.dealId === "d-settle");
-  assert.deepEqual(settled.paid, 40);
+  const paid = eb.result.events.find((e) => e.type === "SETTLED" && e.dealId === "d-settle");
+  assert.deepEqual(paid.paid, 40);
+});
+
+test("protocol: delivery walks every hop with one STATE event each", async () => {
+  await post("/api/deals", { id: "d-walk", buyer: "buyer", seller: "seller", price: 50 });
+  await post("/api/deals/d-walk/moves", { key: "k1", kind: "OFFER", price: 50 });
+  await post("/api/deals/d-walk/moves", { key: "k2", kind: "ACCEPT", price: 40 });
+  await post("/api/deals/d-walk/pay", {});
+  const [status] = await post(
+    "/api/deals/d-walk/delivery",
+    { id: "del-walk", dealId: "d-walk", deliveryUrl: "deliverable:walk" },
+    freshKey(),
+    sellerKey,
+  );
+  assert.equal(status, 202);
+  // The walk hops must appear in order in the feed (a later background
+  // verdict may append more STATE events after them — hence subsequence,
+  // not exact equality).
+  const [, eb] = await get("/api/events");
+  const hops = eb.result.events
+    .filter((e) => e.type === "STATE" && e.dealId === "d-walk")
+    .map((e) => `${e.from}->${e.to}`)
+    .join("\n");
+  const want = ["ESCROW_LOCKED->EXECUTING", "EXECUTING->DELIVERED", "DELIVERED->VERIFYING"].join("\n");
+  assert.ok(hops.includes(want), `walk hops out of order:\n${hops}`);
+});
+
+test("protocol: server rejects delivery before pay with MUST_PAY_BEFORE_DELIVERY", async () => {
+  await post("/api/deals", { id: "d-nopay", buyer: "buyer", seller: "seller", price: 50 });
+  await post("/api/deals/d-nopay/moves", { key: "k1", kind: "OFFER", price: 50 });
+  await post("/api/deals/d-nopay/moves", { key: "k2", kind: "ACCEPT", price: 40 });
+  const [status, body] = await post(
+    "/api/deals/d-nopay/delivery",
+    { id: "del-1", dealId: "d-nopay", deliveryUrl: "deliverable:x" },
+    freshKey(),
+    sellerKey,
+  );
+  assert.equal(status, 409);
+  assertErr(body, "MUST_PAY_BEFORE_DELIVERY");
+});
+
+test("protocol: server rejects a duplicate delivery id with 409, not a 500", async () => {
+  await post("/api/deals", { id: "d-dupdel", buyer: "buyer", seller: "seller", price: 50 });
+  await post("/api/deals/d-dupdel/moves", { key: "k1", kind: "OFFER", price: 50 });
+  await post("/api/deals/d-dupdel/moves", { key: "k2", kind: "ACCEPT", price: 40 });
+  await post("/api/deals/d-dupdel/pay", {});
+  const first = { id: "del-dup", dealId: "d-dupdel", deliveryUrl: "deliverable:dup" };
+  const [s1] = await post("/api/deals/d-dupdel/delivery", first, freshKey(), sellerKey);
+  assert.equal(s1, 202);
+  // Delivery ids are globally unique: the same id on a second live escrow
+  // hits the record check while still ESCROW_LOCKED.
+  await post("/api/deals", { id: "d-dupdel-b", buyer: "buyer", seller: "seller", price: 50 });
+  await post("/api/deals/d-dupdel-b/moves", { key: "k1", kind: "OFFER", price: 50 });
+  await post("/api/deals/d-dupdel-b/moves", { key: "k2", kind: "ACCEPT", price: 40 });
+  await post("/api/deals/d-dupdel-b/pay", {});
+  const [s2, b2] = await post(
+    "/api/deals/d-dupdel-b/delivery",
+    { id: "del-dup", dealId: "d-dupdel-b", deliveryUrl: "deliverable:dup" },
+    freshKey(),
+    sellerKey,
+  );
+  assert.equal(s2, 409);
+  assertErr(b2, "DUPLICATE_DELIVERY");
+  // The rejected call moved nothing: the second deal is still locked.
+  const [gs, gb] = await get("/api/deals/d-dupdel-b");
+  assert.equal(gs, 200);
+  assert.equal(gb.state, "ESCROW_LOCKED");
 });
 
 test("protocol: server replays a repeated idempotency key", async () => {

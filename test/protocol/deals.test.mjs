@@ -1,0 +1,148 @@
+import test, { before, after } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { startServer } from "../../protocol/server.js";
+
+// The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
+// traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
+process.env.NO_PROXY = "127.0.0.1,localhost";
+process.env.no_proxy = "127.0.0.1,localhost";
+
+let url;
+let stop;
+let dir;
+let n = 0;
+
+const freshKey = () => `deals-${(n += 1)}`;
+
+async function post(p, body, agentKey) {
+  const headers = { "content-type": "application/json", "idempotency-key": freshKey() };
+  if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
+  const res = await fetch(url + p, { method: "POST", headers, body: JSON.stringify(body) });
+  return [res.status, await res.json()];
+}
+
+async function get(p, agentKey) {
+  const headers = agentKey === undefined ? {} : { "x-agent-key": agentKey };
+  const res = await fetch(url + p, { headers });
+  return [res.status, await res.json()];
+}
+
+let buyerKey;
+let sellerKey;
+let rivalKey;
+
+before(async () => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), "bazaar-deals-"));
+  const started = await startServer({ dbPath: path.join(dir, "store.db"), port: 0 });
+  url = started.url;
+  stop = started.close;
+  buyerKey = (await post("/api/agents", { id: "list-buyer", role: "buyer" }))[1].result.api_key;
+  sellerKey = (await post("/api/agents", { id: "list-seller", role: "seller" }))[1].result.api_key;
+  rivalKey = (await post("/api/agents", { id: "list-rival", role: "buyer" }))[1].result.api_key;
+  // Three buyer deals across three states, plus one rival deal that must
+  // stay invisible to the buyer.
+  await post("/api/deals", { id: "pg-neg", buyer: "list-buyer", seller: "list-seller", price: 60 }, buyerKey);
+  await post("/api/deals", { id: "pg-agree", buyer: "list-buyer", seller: "list-seller", price: 60 }, buyerKey);
+  await post("/api/deals/pg-agree/moves", { key: "k1", kind: "OFFER", price: 60 }, buyerKey);
+  await post("/api/deals/pg-agree/moves", { key: "k2", kind: "ACCEPT", price: 50 }, sellerKey);
+  await post("/api/deals", { id: "pg-lock", buyer: "list-buyer", seller: "list-seller", price: 60 }, buyerKey);
+  await post("/api/deals/pg-lock/moves", { key: "k1", kind: "OFFER", price: 60 }, buyerKey);
+  await post("/api/deals/pg-lock/moves", { key: "k2", kind: "ACCEPT", price: 50 }, sellerKey);
+  await post("/api/deals/pg-lock/pay", {}, buyerKey);
+  await post("/api/deals", { id: "pg-rival", buyer: "list-rival", seller: "list-seller", price: 10 }, rivalKey);
+});
+
+after(async () => {
+  await stop();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("protocol: health answers without auth", async () => {
+  const [status, body] = await get("/health");
+  assert.equal(status, 200);
+  assert.equal(body.ok, true);
+  assert.deepEqual(body.result, { status: "UP" });
+});
+
+test("protocol: the public directory lists approved sellers, never buyers", async () => {
+  process.env.ADMIN_SECRET = "test-dir-secret";
+  const register = async (id, role) => {
+    const [s, b] = await post("/api/agents", { id, role });
+    assert.equal(s, 200);
+    return b.result.api_key;
+  };
+  await register("dir-buyer", "buyer");
+  await register("dir-seller", "seller");
+  const approve = (id) =>
+    fetch(url + `/api/admin/agents/${id}/approve`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer test-dir-secret",
+        "idempotency-key": freshKey(),
+      },
+      body: JSON.stringify({}),
+    }).then(async (r) => r.status);
+  assert.equal(await approve("dir-buyer"), 200);
+  assert.equal(await approve("dir-seller"), 200);
+  const [, listed] = await get("/api/agents");
+  const ids = listed.result.agents.map((a) => a.id);
+  assert.ok(ids.includes("dir-seller"));
+  assert.ok(!ids.includes("dir-buyer"));
+});
+
+test("protocol: deal listing requires a key and stays scoped to your deals", async () => {
+  const [unauth, unauthBody] = await get("/api/deals");
+  assert.equal(unauth, 401);
+  assert.equal(unauthBody.error.code, "UNAUTHORIZED");
+  const [status, body] = await get("/api/deals", buyerKey);
+  assert.equal(status, 200);
+  assert.deepEqual(
+    body.result.deals.map((d) => d.id),
+    ["pg-neg", "pg-agree", "pg-lock"],
+  );
+  assert.equal(body.result.total, 3);
+  const [rivalStatus, rivalBody] = await get("/api/deals", rivalKey);
+  assert.equal(rivalStatus, 200);
+  assert.deepEqual(
+    rivalBody.result.deals.map((d) => d.id),
+    ["pg-rival"],
+  );
+  // The seller is a party too — including on the rival's deal, where they
+  // are the named seller. Party scoping is by participation, not by who
+  // opened.
+  const [sellerStatus, sellerBody] = await get("/api/deals", sellerKey);
+  assert.equal(sellerStatus, 200);
+  assert.equal(sellerBody.result.total, 4);
+});
+
+test("protocol: deal listing pages and filters by status", async () => {
+  const [, first] = await get("/api/deals?limit=2", buyerKey);
+  assert.deepEqual(
+    first.result.deals.map((d) => d.id),
+    ["pg-neg", "pg-agree"],
+  );
+  assert.equal(first.result.total, 3);
+  const [, second] = await get("/api/deals?limit=2&offset=2", buyerKey);
+  assert.deepEqual(
+    second.result.deals.map((d) => d.id),
+    ["pg-lock"],
+  );
+  const [, filtered] = await get("/api/deals?status=ESCROW_LOCKED", buyerKey);
+  assert.deepEqual(
+    filtered.result.deals.map((d) => d.id),
+    ["pg-lock"],
+  );
+  assert.equal(filtered.result.total, 1);
+});
+
+test("protocol: deal listing rejects bad filters", async () => {
+  for (const query of ["?status=BOGUS", "?limit=0", "?limit=101", "?limit=abc", "?offset=-1"]) {
+    const [status, body] = await get(`/api/deals${query}`, buyerKey);
+    assert.equal(status, 400, query);
+    assert.equal(body.error.code, "INVALID_SCHEMA", query);
+  }
+});
