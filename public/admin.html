@@ -6,7 +6,7 @@
   <title>Bazaar Protocol // Admin Console</title>
   <link rel="stylesheet" href="/style.css" />
 </head>
-<body>
+<body data-density="comfortable">
   <header>
     <h1>BAZAAR PROTOCOL // ADMIN CONSOLE</h1>
     <span class="net" data-tip="Polls /api/admin/dashboard; green means the admin API answered">
@@ -15,33 +15,30 @@
     <button id="logout" data-tip="Clears the stored secret and returns to the login page">Logout</button>
   </header>
   <div class="shell">
-    <aside class="sidebar">
-      <details name="nav" open>
-        <summary>Monitor</summary>
-        <button class="navlink active" data-view="dashboard">Dashboard</button>
-      </details>
-      <details name="nav" open>
-        <summary>Agents</summary>
-        <button class="navlink" data-view="registry">Agent Registry</button>
-        <button class="navlink" data-view="reviews">Approval Queue <span id="review-count"></span></button>
-      </details>
-      <details name="nav" open>
-        <summary>System</summary>
-        <button class="navlink" data-view="audit">Audit Log</button>
-      </details>
+    <aside class="sidebar" aria-label="Console sections">
+      <button class="navlink active" data-view="overview">Overview</button>
+      <button class="navlink" data-view="approvals">Approvals <span id="review-count"></span></button>
+      <button class="navlink" data-view="deals">Deals</button>
+      <button class="navlink" data-view="disputes">Disputes</button>
+      <button class="navlink" data-view="ledger">Ledger</button>
+      <button class="navlink" data-view="events">Events</button>
+      <button class="navlink" data-view="settings">Settings</button>
     </aside>
     <main>
-      <section id="view-dashboard">
-        <div class="row">
-          <button id="pause" data-tip="Halts this dashboard's polling only; the protocol keeps running">Pause Protocol</button>
-          <span class="sub" id="paused-note"></span>
+      <section id="view-overview">
+        <div class="card attention" aria-label="Needs attention">
+          <h2>Needs attention</h2>
+          <ul id="attention-list"></ul>
         </div>
-        <div class="card" style="margin-bottom: 12px">
-          <h2 data-tip="Live count of deals per protocol state, from the same dashboard poll">Global State Machine</h2>
-          <div class="sm-strip" id="sm-strip" data-component="state-machine"></div>
-          <div class="sm-flows" id="sm-flows"></div>
-        </div>
-        <div class="cards">
+        <div class="cards kpis">
+          <div class="card" data-tip="Every agent row in SQLite, any status">
+            <h2>Agents</h2>
+            <div class="big" id="m-agents" data-metric="agents">–</div>
+          </div>
+          <div class="card" data-tip="Agent listings waiting for a human decision">
+            <h2>Pending approvals</h2>
+            <div class="big" id="m-pending" data-metric="pending">–</div>
+          </div>
           <div class="card" data-tip="Deals not in a terminal state (anything but SETTLED or REJECTED)">
             <h2>Active Deals</h2>
             <div class="big" id="m-active" data-metric="activeDeals">–</div>
@@ -50,87 +47,224 @@
             <h2>Total Value Locked</h2>
             <div class="big"><span id="m-tvl" data-metric="tvl">–</span> <span class="sub">CR</span></div>
           </div>
+          <div class="card" data-tip="Escrow held on VERIFYING deals: frozen until the inspector reaches a verdict">
+            <h2>Frozen escrow</h2>
+            <div class="big"><span id="m-frozen" data-metric="frozen">–</span> <span class="sub">CR</span></div>
+          </div>
           <div class="card" data-tip="Terminal outcomes since the database was created">
             <h2>Settled vs Rejected</h2>
             <div class="big"><span id="m-settled" data-metric="settled">–</span> / <span id="m-rejected" data-metric="rejected">–</span></div>
             <div class="sub">settled / rejected</div>
           </div>
         </div>
-        <div class="grid">
-          <div class="card">
-            <div class="card-head">
-              <h2 data-tip="Last 50 protocol responses, newest first">Live Traffic Log</h2>
-              <div class="card-tools">
-                <input id="log-search" type="search" placeholder="Filter…" data-tip="Substring match on method, path, and status" />
-                <button id="log-pause" data-tip="Stop autoscrolling; entries keep arriving">Pause Scroll</button>
-                <button id="log-clear" data-tip="Hide everything so far; only newer requests return">Clear</button>
-              </div>
-            </div>
-            <div id="log"></div>
-          </div>
-          <div>
-            <div class="card">
-              <h2 data-tip="Every deal row in SQLite, in creation order">Active Deals Table</h2>
-              <table>
-                <thead><tr><th>Deal ID</th><th>State</th><th>Buyer</th><th>Seller</th><th>Price</th><th>Expires</th></tr></thead>
-                <tbody id="deals"></tbody>
-              </table>
-            </div>
-            <div class="card" style="margin-top: 12px">
-              <h2 data-tip="Full deal record plus its moves, from GET /api/deals/:id">Deal Detail</h2>
-              <pre id="detail">Click a row to inspect a deal.</pre>
-            </div>
-          </div>
+        <div class="card" style="margin-bottom: 12px">
+          <h2 data-tip="Live count of deals per protocol state, from the same dashboard poll">Global State Machine</h2>
+          <div class="sm-strip" id="sm-strip" data-component="state-machine"></div>
+          <div class="sm-flows" id="sm-flows"></div>
         </div>
       </section>
-      <section id="view-registry" hidden>
+      <section id="view-approvals" hidden>
         <div class="card">
-          <h2 data-tip="Every agent row in SQLite, including non-public statuses">Agent Registry</h2>
-          <table>
-            <thead><tr><th>Agent ID</th><th>Title</th><th>Status</th><th>Price</th><th>Actions</th></tr></thead>
-            <tbody id="agents"></tbody>
-          </table>
-        </div>
-        <div class="card" style="margin-top: 12px">
-          <h2 data-tip="The selected agent's full record">Agent Detail</h2>
-          <pre id="agent-detail">Select a row to inspect an agent.</pre>
-        </div>
-      </section>
-      <section id="view-reviews" hidden>
-        <div class="card">
-          <h2 data-tip="Agent listings waiting for a human decision">Approval Queue</h2>
-          <table>
-            <thead><tr><th>Agent ID</th><th>Role</th><th>Capability</th><th>Decide</th></tr></thead>
-            <tbody id="reviews"></tbody>
-          </table>
+          <div class="card-head">
+            <h2 data-tip="Agent listings waiting for a human decision">Approval Queue</h2>
+            <div class="card-tools table-tools" data-table-tools="reviews">
+              <input type="search" placeholder="Search…" aria-label="Search approval queue" data-role="search" />
+              <div class="chip-row" data-role="chips"></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" data-table="reviews">
+              <thead><tr><th data-sort="id">Agent ID</th><th data-sort="role">Role</th><th data-sort="capability">Capability</th><th>Decide</th></tr></thead>
+              <tbody id="reviews"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No agents awaiting review.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
         </div>
         <div class="card" style="margin-top: 12px">
           <h2 data-tip="The selected listing's full record">Listing Detail</h2>
-          <pre id="review-detail">Select a row to inspect a listing.</pre>
+          <div class="detail-pane" id="review-detail">Select a row to inspect a listing.</div>
+        </div>
+        <div class="card" style="margin-top: 12px">
+          <div class="card-head">
+            <h2 data-tip="Every agent row in SQLite, including non-public statuses">All Agents</h2>
+            <div class="card-tools table-tools" data-table-tools="agents">
+              <input type="search" placeholder="Search…" aria-label="Search agents" data-role="search" />
+              <div class="chip-row" data-role="chips"></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" data-table="agents">
+              <thead><tr><th data-sort="id">Agent ID</th><th data-sort="title">Title</th><th data-sort="status">Status</th><th data-sort="price">Price</th><th>Actions</th></tr></thead>
+              <tbody id="agents"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No agents registered yet.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
+        </div>
+        <div class="card" style="margin-top: 12px">
+          <h2 data-tip="The selected agent's full record">Agent Detail</h2>
+          <div class="detail-pane" id="agent-detail">Select a row to inspect an agent.</div>
         </div>
       </section>
-      <section id="view-audit" hidden>
+      <section id="view-deals" hidden>
         <div class="card">
-          <h2 data-tip="Last 100 moderation decisions, newest last">Audit Log</h2>
-          <table>
-            <thead><tr><th>Time</th><th>Action</th><th>Agent</th><th>From → To</th><th>Reason</th></tr></thead>
-            <tbody id="audit"></tbody>
-          </table>
+          <div class="card-head">
+            <h2 data-tip="Every deal row in SQLite, in creation order">Deals</h2>
+            <div class="card-tools table-tools" data-table-tools="deals">
+              <input type="search" placeholder="Search…" aria-label="Search deals" data-role="search" />
+              <div class="chip-row" data-role="chips"></div>
+              <select data-role="sort" aria-label="Sort deals"></select>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" data-table="deals">
+              <thead><tr><th data-sort="id">Deal ID</th><th data-sort="state">State</th><th data-sort="buyer">Buyer</th><th data-sort="seller">Seller</th><th data-sort="price">Price</th><th>Expires</th></tr></thead>
+              <tbody id="deals"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No deals yet.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
+        </div>
+        <div class="card" style="margin-top: 12px">
+          <h2 data-tip="Full deal record plus its moves, from GET /api/deals/:id">Deal Detail</h2>
+          <div class="detail-pane" id="detail">Click a row to inspect a deal.</div>
+        </div>
+      </section>
+      <section id="view-disputes" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2 data-tip="VERIFYING deals: escrow stays frozen until the inspector reaches a verdict">Frozen escrow</h2>
+            <div class="card-tools table-tools" data-table-tools="frozen">
+              <input type="search" placeholder="Search…" aria-label="Search frozen escrows" data-role="search" />
+              <div class="chip-row" data-role="chips"></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" data-table="frozen">
+              <thead><tr><th data-sort="id">Deal ID</th><th data-sort="state">State</th><th data-sort="buyer">Buyer</th><th data-sort="seller">Seller</th><th data-sort="price">Price</th><th>Expires</th></tr></thead>
+              <tbody id="frozen"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No frozen escrows. Failed verification keeps funds locked by design.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
+        </div>
+        <div class="card" style="margin-top: 12px">
+          <h2 data-tip="Rejected deals: the buyer was refunded">Rejected deals</h2>
+          <div class="table-wrap">
+            <table class="table" data-table="rejected">
+              <thead><tr><th data-sort="id">Deal ID</th><th data-sort="buyer">Buyer</th><th data-sort="seller">Seller</th><th data-sort="price">Price</th></tr></thead>
+              <tbody id="rejected"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No rejected deals.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
+        </div>
+      </section>
+      <section id="view-ledger" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2 data-tip="Deals currently holding escrowed funds">Locked funds</h2>
+            <div class="card-tools table-tools" data-table-tools="ledger">
+              <input type="search" placeholder="Search…" aria-label="Search locked funds" data-role="search" />
+              <div class="chip-row" data-role="chips"></div>
+            </div>
+          </div>
+          <p class="sub" id="ledger-summary">–</p>
+          <div class="table-wrap">
+            <table class="table" data-table="ledger">
+              <thead><tr><th data-sort="id">Deal ID</th><th data-sort="state">State</th><th data-sort="price">Price</th><th data-sort="buyer">Buyer</th><th data-sort="seller">Seller</th></tr></thead>
+              <tbody id="ledger"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No funds currently locked.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
+        </div>
+      </section>
+      <section id="view-events" hidden>
+        <details class="card" id="raw-log-wrap">
+          <summary class="card-head">
+            <h2 data-tip="Last 50 protocol responses, newest first">Raw event log</h2>
+            <span class="sub">collapsed by default</span>
+          </summary>
+          <div class="card-tools table-tools log-tools">
+            <input id="log-search" type="search" placeholder="Filter by id…" data-tip="Substring match on method, path, and status" aria-label="Filter log by id" />
+            <select id="log-type" aria-label="Filter log by event type">
+              <option value="">All types</option>
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PATCH">PATCH</option>
+              <option value="DELETE">DELETE</option>
+              <option value="2xx">2xx</option>
+              <option value="4xx">4xx</option>
+              <option value="5xx">5xx</option>
+            </select>
+            <label class="sub"><input id="log-hide-system" type="checkbox" checked /> Hide system events</label>
+            <button id="log-pause" data-tip="Stop autoscrolling; entries keep arriving">Pause Scroll</button>
+            <button id="log-clear" data-tip="Hide everything so far; only newer requests return">Clear</button>
+          </div>
+          <div id="log"></div>
+        </details>
+        <div class="card" style="margin-top: 12px">
+          <div class="card-head">
+            <h2 data-tip="Last 100 moderation decisions, newest last">Audit Log</h2>
+            <div class="card-tools table-tools" data-table-tools="audit">
+              <input type="search" placeholder="Search…" aria-label="Search audit log" data-role="search" />
+              <div class="chip-row" data-role="chips"></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" data-table="audit">
+              <thead><tr><th data-sort="at">Time</th><th data-sort="action">Action</th><th data-sort="agent">Agent</th><th>From → To</th><th>Reason</th></tr></thead>
+              <tbody id="audit"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No moderation decisions recorded.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
+        </div>
+      </section>
+      <section id="view-settings" hidden>
+        <div class="card">
+          <h2>Console settings</h2>
+          <div class="row">
+            <button id="pause" data-tip="Halts this dashboard's polling only; the protocol keeps running">Pause Protocol</button>
+            <span class="sub" id="paused-note"></span>
+          </div>
+          <div class="row">
+            <span class="sub">Density</span>
+            <button class="tab" data-density="comfortable">Comfortable</button>
+            <button class="tab" data-density="compact">Compact</button>
+          </div>
+          <p class="sub">Polling is display-only: the protocol keeps running when paused.</p>
         </div>
       </section>
       <div id="modal" class="modal-backdrop" hidden>
-        <div class="card modal-card">
-          <h2 id="modal-title">Moderate agent</h2>
+        <div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+          <button class="btn btn-ghost modal-x" id="modal-x" aria-label="Close dialog">✕</button>
+          <h2 id="modal-title">Dialog</h2>
           <p class="sub" id="modal-agent"></p>
-          <input id="modal-reason" type="text" placeholder="Reason (shown to the agent)" data-tip="Stored as status_reason; the agent sees it on the status endpoint" />
-          <div class="row">
-            <button id="modal-confirm">Confirm</button>
-            <button id="modal-cancel">Cancel</button>
-          </div>
+          <div id="modal-body"></div>
+          <p class="field-error" id="modal-error" hidden></p>
+          <div class="row modal-actions" id="modal-foot"></div>
         </div>
       </div>
+      <div id="toasts" aria-live="polite" aria-label="Notifications"></div>
+      <aside id="drawer" class="drawer" hidden aria-label="Row details">
+        <div class="card-head">
+          <h2 id="drawer-title">Details</h2>
+          <button class="btn btn-ghost" id="drawer-close">Close</button>
+        </div>
+        <pre id="drawer-body"></pre>
+      </aside>
     </main>
   </div>
   <script src="/app.js"></script>
+  <footer class="site-footer">
+    <div class="container">
+      <strong>BAZAAR//</strong>
+      <span>Trust layer for agent commerce.</span>
+      <span class="mono">Schema -&gt; Referee -&gt; State -&gt; Ledger</span>
+    </div>
+  </footer>
 </body>
 </html>
