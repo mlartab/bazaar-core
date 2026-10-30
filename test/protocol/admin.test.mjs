@@ -237,7 +237,7 @@ test("protocol: approving an agent publishes it to the marketplace", async () =>
   assert.ok(typeof body.result.api_key === "string" && body.result.api_key.length > 0);
   const [, listed] = await get("/api/agents");
   const row = listed.result.agents.find((a) => a.id === "pending1");
-  assert.deepEqual(row, { id: "pending1", role: "seller", capability: "Video editing", title: null, description: null, price: null, category: null });
+  assert.deepEqual(row, { id: "pending1", role: "seller", capability: "Video editing", title: null, description: null, price: null, category: null, service_type: "negotiation", min_price: null, skills: [], metadata: null });
   const [, status] = await get("/api/agents/pending1/status");
   assert.deepEqual(status.result, { status: "ACTIVE", status_reason: "verified seller" });
   const [, agents] = await aget("/api/admin/agents");
@@ -302,6 +302,10 @@ test("protocol: a full listing is stored and listed after approval", async () =>
     description: "Trailer edits in 48 hours.",
     price: 150,
     category: null,
+    service_type: "negotiation",
+    min_price: null,
+    skills: [],
+    metadata: null,
   });
 });
 
@@ -342,6 +346,42 @@ test("protocol: PATCH edits listing fields and rejects unknowns", async () => {
   assert.equal(bEmpty.error.code, "BAD_PATCH");
   const [sMissing] = await patch("ghost", { title: "Ghost Listing" });
   assert.equal(sMissing, 404);
+});
+
+test("protocol: PATCH edits the listing strategy fields", async () => {
+  const patch = async (id, body) => {
+    const res = await fetch(url + `/api/admin/agents/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: "Bearer test-admin-secret" },
+      body: JSON.stringify(body),
+    });
+    return [res.status, await res.json()];
+  };
+  const [s, b] = await post("/api/agents", { id: "strat1", role: "seller", service_type: "negotiation", min_price: 40, skills: ["react"] });
+  assert.equal(s, 200);
+  assert.ok(b.result.api_key);
+  const [ps, pb] = await patch("strat1", {
+    service_type: "endpoint",
+    min_price: 120,
+    skills: ["react", "node"],
+    metadata: { endpoint_url: "https://api.example.com/v1", method: "POST" },
+    price: 150,
+  });
+  assert.equal(ps, 200);
+  assert.equal(pb.ok, true);
+  const [, detail] = await aget("/api/admin/agents/strat1");
+  assert.equal(detail.result.agent.service_type, "endpoint");
+  assert.equal(detail.result.agent.min_price, 120);
+  assert.deepEqual(detail.result.agent.skills, ["react", "node"]);
+  assert.deepEqual(detail.result.agent.metadata, { endpoint_url: "https://api.example.com/v1", method: "POST" });
+  assert.equal(detail.result.agent.price, 150);
+  // Strategy shapes are validated like every other patch field.
+  const [sBadType, bBadType] = await patch("strat1", { service_type: "auction" });
+  assert.equal(sBadType, 400);
+  assert.equal(bBadType.error.code, "INVALID_SCHEMA");
+  const [sBadSkills, bBadSkills] = await patch("strat1", { skills: Array(11).fill("x") });
+  assert.equal(sBadSkills, 400);
+  assert.equal(bBadSkills.error.code, "INVALID_SCHEMA");
 });
 
 test("protocol: DELETE removes agents but refuses live deals", async () => {

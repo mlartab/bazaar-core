@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { startServer, pruneIdempotency } from "../../protocol/server.js";
+import { startServer, pruneIdempotency, pruneRegAttempts, capRegAttempts, REG_ATTEMPT_WINDOW_MS, MAX_REG_IPS } from "../../protocol/server.js";
 import { EVENT_CAP, IDEMPOTENCY_TTL_MS } from "../../protocol/config.js";
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
@@ -297,6 +297,37 @@ test("protocol: pruneIdempotency drops only entries past the TTL", () => {
   ]);
   pruneIdempotency(map, now, IDEMPOTENCY_TTL_MS);
   assert.deepEqual([...map.keys()], ["edge", "fresh"]);
+});
+
+test("protocol: pruneRegAttempts drops only IPs with no in-window attempt", () => {
+  const now = 10_000_000;
+  const map = new Map([
+    ["stale", [now - REG_ATTEMPT_WINDOW_MS - 1]],
+    ["mixed", [now - REG_ATTEMPT_WINDOW_MS - 1, now - 1]],
+    ["fresh", [now - 1]],
+    ["empty", []],
+  ]);
+  pruneRegAttempts(map, now, REG_ATTEMPT_WINDOW_MS);
+  // Mixed survives on its one fresh stamp; fully-aged and empty IPs go.
+  assert.deepEqual([...map.keys()], ["mixed", "fresh"]);
+  assert.deepEqual(map.get("mixed"), [now - REG_ATTEMPT_WINDOW_MS - 1, now - 1]);
+});
+
+test("protocol: capRegAttempts evicts oldest-first down to the cap", () => {
+  assert.equal(MAX_REG_IPS, 10000);
+  const map = new Map([
+    ["a", [1]],
+    ["b", [2]],
+    ["c", [3]],
+    ["d", [4]],
+    ["e", [5]],
+  ]);
+  capRegAttempts(map, 3);
+  assert.deepEqual([...map.keys()], ["c", "d", "e"]);
+  // At or under the cap nothing is touched.
+  capRegAttempts(map, 3);
+  capRegAttempts(map, 99);
+  assert.deepEqual([...map.keys()], ["c", "d", "e"]);
 });
 
 test("protocol: the events feed is capped at the newest 500 rows", async () => {

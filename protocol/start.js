@@ -9,7 +9,9 @@ const DB_PATH = process.env.DB_PATH ?? "data/bazaar.db";
 const dbDir = path.dirname(DB_PATH);
 mkdirSync(dbDir, { recursive: true });
 
-const { close } = await startServer({ dbPath: DB_PATH, port: PORT });
+const HOST = process.env.HOST ?? "0.0.0.0";
+
+const { close } = await startServer({ dbPath: DB_PATH, port: PORT, host: HOST });
 
 console.log("");
 console.log("╔══════════════════════════════════════════╗");

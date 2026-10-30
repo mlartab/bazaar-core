@@ -10,6 +10,7 @@ function fieldToJsonSchema(field) {
   if (field.type === "string") out.type = "string";
   else if (field.type === "integer") out.type = "integer";
   else if (field.type === "number") out.type = "number";
+  else if (field.type === "array") out.type = "array";
   else if (field.type === "object") out.type = "object";
   if (field.minLength !== undefined) out.minLength = field.minLength;
   if (field.maxLength !== undefined) out.maxLength = field.maxLength;
@@ -17,6 +18,12 @@ function fieldToJsonSchema(field) {
   if (field.max !== undefined) out.maximum = field.max;
   if (Array.isArray(field.enum)) out.enum = field.enum;
   else if (Array.isArray(field.allowed)) out.enum = field.allowed;
+  if (field.type === "array" && field.maxItems !== undefined) out.maxItems = field.maxItems;
+  if (field.type === "array" && field.items !== undefined) {
+    const itemSchema = fieldToJsonSchema({ type: field.items.type, minLength: field.items.nonEmpty === true ? 1 : undefined, maxLength: field.items.maxLength });
+    if (Object.keys(itemSchema).length > 0) out.items = itemSchema;
+  }
+  if (field.type === "object" && field.maxKeys !== undefined) out.maxProperties = field.maxKeys;
   return out;
 }
 

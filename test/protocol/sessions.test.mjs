@@ -8,6 +8,12 @@ import { openStore } from "../../protocol/db.js";
 import { DELIVERY_TIMEOUT_MS, INSPECTION_TIMEOUT_MS } from "../../protocol/config.js";
 import { createSessionManager } from "../../protocol/session-manager.js";
 import { createLedger, deposit, lock } from "../../src/ledger.js";
+import { startServer } from "../../protocol/server.js";
+
+// The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
+// traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
+process.env.NO_PROXY = "127.0.0.1,localhost";
+process.env.no_proxy = "127.0.0.1,localhost";
 
 function tempFile() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bazaar-sessions-"));
@@ -275,5 +281,83 @@ test("protocol: a legacy database migrates expiry columns with NULL backfill", (
     assert.equal(store.listDeals().find((d) => d.id === "d-new").expires_at, NOW + 60_000);
   } finally {
     cleanup(store, tmp);
+  }
+});
+
+test("protocol: restart with a VERIFYING deal rebuilds the lock so the sweep can refund", async () => {
+  const savedSecret = process.env.ADMIN_SECRET;
+  const savedTimeout = process.env.INSPECTION_TIMEOUT_MS;
+  process.env.ADMIN_SECRET = "test-admin-secret";
+  // A 1ms inspection window: after the restart every VERIFYING row stamped
+  // before the reboot is immediately sweepable, with no sleeping.
+  process.env.INSPECTION_TIMEOUT_MS = "1";
+  const tmp = tempFile();
+  const file = path.join(tmp.dir, "store.db");
+  let n = 0;
+  const post = async (base, p, body, agentKey) => {
+    const headers = { "content-type": "application/json", "idempotency-key": `restart-${(n += 1)}` };
+    if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
+    const res = await fetch(base + p, { method: "POST", headers, body: JSON.stringify(body) });
+    return [res.status, await res.json()];
+  };
+  const get = async (base, p, agentKey) => {
+    const headers = agentKey === undefined ? {} : { "x-agent-key": agentKey };
+    const res = await fetch(base + p, { headers });
+    return [res.status, await res.json()];
+  };
+  let first = null;
+  try {
+    first = await startServer({ dbPath: file, port: 0 });
+    const buyerKey = (await post(first.url, "/api/agents", { id: "rv-buyer", role: "buyer" }))[1].result.api_key;
+    const sellerKey = (await post(first.url, "/api/agents", { id: "rv-seller", role: "seller" }))[1].result.api_key;
+    assert.equal((await post(first.url, "/api/deals", { id: "d-restart-verify", buyer: "rv-buyer", seller: "rv-seller", price: 50 }, buyerKey))[0], 200);
+    assert.equal((await post(first.url, "/api/deals/d-restart-verify/moves", { key: "k1", kind: "OFFER", price: 50 }, buyerKey))[0], 200);
+    assert.equal((await post(first.url, "/api/deals/d-restart-verify/moves", { key: "k2", kind: "ACCEPT", price: 40 }, sellerKey))[0], 200);
+    assert.equal((await post(first.url, "/api/deals/d-restart-verify/pay", {}, buyerKey))[0], 200);
+    // image_gen with an unfetchable reference: the local checker records
+    // INCONCLUSIVE, so the escrow freezes in VERIFYING by design.
+    const [ds, db] = await post(first.url, "/api/deals/d-restart-verify/delivery", { id: "rv-del-1", dealId: "d-restart-verify", deliveryUrl: "deliverable:pending", capability: "image_gen" }, sellerKey);
+    assert.equal(ds, 202);
+    assert.equal(db.state, "VERIFYING");
+    await first.close();
+    first = null;
+
+    // Fresh process, same file: the in-memory ledger starts empty and boot
+    // reconcile must rebuild the 40-credit lock before any request.
+    const second = await startServer({ dbPath: file, port: 0 });
+    try {
+      const sweepRes = await fetch(second.url + "/api/admin/demo/sweep", {
+        method: "POST",
+        headers: { authorization: "Bearer test-admin-secret", "content-type": "application/json", "idempotency-key": "restart-sweep" },
+        body: "{}",
+      });
+      assert.equal(sweepRes.status, 200);
+      const inspections = (await sweepRes.json()).result.sweeps.inspections;
+      assert.equal(inspections.length, 1);
+      assert.equal(inspections[0].id, "d-restart-verify");
+      assert.equal(inspections[0].to, "REJECTED");
+      assert.equal(inspections[0].refunded, true);
+      assert.ok(!("error" in inspections[0]), `expected a clean refund, got ${JSON.stringify(inspections[0])}`);
+      // Without the rebuilt lock this outcome is an error envelope
+      // (NO_SUCH_DEAL: "deal has no lock to refund") and the state never moves.
+      const [gs, gb] = await get(second.url, "/api/deals/d-restart-verify", buyerKey);
+      assert.equal(gs, 200);
+      assert.equal(gb.state, "REJECTED");
+      assert.equal(gb.result.verdict.status, "EXPIRED");
+      assert.equal(gb.result.verdict.close_reason, "INSPECTION_TIMEOUT");
+    } finally {
+      await second.close();
+    }
+  } finally {
+    try {
+      await first?.close();
+    } catch {
+      // Already closed by the test itself.
+    }
+    fs.rmSync(tmp.dir, { recursive: true, force: true });
+    if (savedSecret === undefined) delete process.env.ADMIN_SECRET;
+    else process.env.ADMIN_SECRET = savedSecret;
+    if (savedTimeout === undefined) delete process.env.INSPECTION_TIMEOUT_MS;
+    else process.env.INSPECTION_TIMEOUT_MS = savedTimeout;
   }
 });

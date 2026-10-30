@@ -165,3 +165,31 @@ test("protocol: deal listing rejects bad filters", async () => {
     assert.equal(body.error.code, "INVALID_SCHEMA", query);
   }
 });
+
+test("protocol: negotiation sellers accept below list but above min_price; endpoints cannot", async () => {
+  const negSeller = (await post("/api/agents", { id: "neg-seller", role: "seller", price: 200, min_price: 50, service_type: "negotiation" }))[1].result.api_key;
+  const epSeller = (await post("/api/agents", { id: "ep-seller", role: "seller", price: 100, service_type: "endpoint" }))[1].result.api_key;
+  // Negotiation: accept 80 on a 150 deal — below the 200 list, above the 50 floor.
+  assert.equal((await post("/api/deals", { id: "d-neg-fl", buyer: "list-buyer", seller: "neg-seller", price: 150 }, buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/d-neg-fl/moves", { key: "k1", kind: "OFFER", price: 150 }, buyerKey))[0], 200);
+  const [as, ab] = await post("/api/deals/d-neg-fl/moves", { key: "k2", kind: "ACCEPT", price: 80 }, negSeller);
+  assert.equal(as, 200);
+  assert.equal(ab.state, "AGREED");
+  // Same seller rejects below the floor, and the bounds name it.
+  assert.equal((await post("/api/deals", { id: "d-neg-lo", buyer: "list-buyer", seller: "neg-seller", price: 150 }, buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/d-neg-lo/moves", { key: "k1", kind: "OFFER", price: 150 }, buyerKey))[0], 200);
+  const [ls, lb] = await post("/api/deals/d-neg-lo/moves", { key: "k2", kind: "ACCEPT", price: 40 }, negSeller);
+  assert.equal(ls, 400);
+  assert.equal(lb.error.code, "UNDER_FLOOR");
+  assert.deepEqual(lb.bounds, { your_offer: 40, floor: 50, last_offer: 150 });
+  // Endpoint: the list price is the floor — 80 on a 100 listing is rejected.
+  assert.equal((await post("/api/deals", { id: "d-ep-lo", buyer: "list-buyer", seller: "ep-seller", price: 150 }, buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/d-ep-lo/moves", { key: "k1", kind: "OFFER", price: 150 }, buyerKey))[0], 200);
+  const [es, eb] = await post("/api/deals/d-ep-lo/moves", { key: "k2", kind: "ACCEPT", price: 80 }, epSeller);
+  assert.equal(es, 400);
+  assert.equal(eb.error.code, "UNDER_FLOOR");
+  assert.equal(eb.bounds.floor, 100);
+  const [fs, fb] = await post("/api/deals/d-ep-lo/moves", { key: "k3", kind: "ACCEPT", price: 100 }, epSeller);
+  assert.equal(fs, 200);
+  assert.equal(fb.state, "AGREED");
+});

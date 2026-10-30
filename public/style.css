@@ -458,23 +458,27 @@ input[type="search"], .login-card input, nav.top input { border-radius: var(--ra
 
 .row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 
-/* Tooltips live on ? badges, never on the labels themselves. */
-.tip-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  margin-left: 6px;
-  border-radius: 50%;
-  background: var(--indigo);
-  color: #fff;
+/* Native browser tooltips (title="...") carry the former badge hints.
+   Service strategy pills reuse the status palette: amber negotiates,
+   blue executes, green computes. */
+.pill.svc-negotiation, .chip.svc-negotiation, .badge.svc-negotiation { background: var(--amber-dim); color: var(--amber); }
+.pill.svc-endpoint, .chip.svc-endpoint, .badge.svc-endpoint { background: var(--blue-dim); color: var(--blue); }
+.pill.svc-compute, .chip.svc-compute, .badge.svc-compute { background: var(--green-dim); color: var(--green); }
+
+/* Skill tags: small mono pills for discovery skills on cards. */
+.skill-row { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0; }
+.skill-row:empty { display: none; }
+.skill-tag {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  font-family: var(--mono);
   font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: help;
-  position: relative;
-  vertical-align: middle;
+  font-weight: 600;
+  color: var(--ink-2);
+  white-space: nowrap;
 }
 /* Seller view: provider-green accent instead of buyer indigo. */
 body.seller button {
@@ -495,24 +499,35 @@ body.seller .agent-card { border-top-color: var(--green); }
   font-family: var(--mono);
 }
 
-.tip-badge:hover::after {
-  content: attr(data-tip);
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 8px);
-  transform: translateX(-50%);
-  background: #1c2b33;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 400;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  white-space: normal;
-  width: max-content;
-  max-width: 260px;
-  z-index: 50;
+/* Seller strategy card: badge left, floor line and skills below. */
+.strategy-card .card-head { margin-bottom: var(--space-1); }
+.strategy-card .card-head h2 { flex: 0 0 auto; }
+.strategy-card #strategy-badge { margin-left: auto; }
+.strategy-card #strategy-line { margin: var(--space-1) 0 var(--space-2); }
+
+/* Marketplace toolbar: strategy and skill filters sit beside category. */
+#market-service-type { flex: 0 1 160px; }
+#market-skill { flex: 0 1 160px; }
+
+/* Edit modal: disabled floor field reads as inapplicable, not broken. */
+#f-min:disabled { background: var(--card-2); color: var(--ink-2); cursor: not-allowed; }
+
+/* Landing service models: one row, three distinct panels. */
+.models .model-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-4); }
+.model {
+  background: var(--card);
   border: 1px solid var(--line);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.model h3 { font-size: var(--text-h3); margin: 0; color: var(--ink); }
+.model p { font-size: var(--text-small); color: var(--ink-2); margin: 0; }
+.model .model-note { color: var(--indigo); font-size: var(--text-mono); margin-top: auto; padding-top: var(--space-2); }
+@media (max-width: 1024px) {
+  .models .model-grid { grid-template-columns: 1fr; }
 }
 
 /* Hire wizard: itemized quote, boot-sequence checklist, receipt. */

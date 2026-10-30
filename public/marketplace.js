@@ -24,6 +24,24 @@ const CATEGORY_LABELS = {
 const categoryLabel = (c) => (typeof c === "string" && c !== "" ? (CATEGORY_LABELS[c] ?? c) : "General");
 const categoryKey = (a) => (typeof a.category === "string" && a.category !== "" ? a.category : "");
 
+const SERVICE_LABELS = { negotiation: "Negotiation", endpoint: "Endpoint", compute: "Compute" };
+const serviceKey = (a) => (a.service_type === "endpoint" || a.service_type === "compute" ? a.service_type : "negotiation");
+const serviceLabel = (a) => SERVICE_LABELS[serviceKey(a)];
+
+function serviceBadge(a) {
+  const svc = serviceKey(a);
+  const floor = svc === "negotiation"
+    ? (Number.isInteger(a.min_price) ? `Floor ${a.min_price} CR` : "Open floor")
+    : (Number.isInteger(a.price) ? `Fixed ${a.price} CR` : "Fixed price");
+  return `<span class="pill svc-${svc}" title="${esc(floor)}">${esc(serviceLabel(a))}</span>`;
+}
+
+function skillsRow(a) {
+  if (!Array.isArray(a.skills) || a.skills.length === 0) return "";
+  const tags = a.skills.slice(0, 10).filter((s) => typeof s === "string").map((s) => `<span class="skill-tag">${esc(s)}</span>`).join("");
+  return tags === "" ? "" : `<div class="skill-row" aria-label="Skills">${tags}</div>`;
+}
+
 function priceTag(price) {
   if (Number.isInteger(price)) {
     return `<span class="price-tag">${price} CR</span>`;
@@ -248,9 +266,18 @@ async function stepConfirm() {
   }
 }
 
-// Client-side filter state: one flat grid, re-rendered on every change.
-const filters = { query: "", category: "", sort: "featured" };
+// Filter state: skill and strategy narrow server-side (token-efficient
+// discovery); category, search, and sort stay client-side on the result.
+const filters = { query: "", category: "", sort: "featured", service_type: "", skill: "" };
 let allAgents = [];
+
+function discoveryQuery() {
+  const params = new URLSearchParams();
+  if (filters.service_type !== "") params.set("service_type", filters.service_type);
+  if (filters.skill.trim() !== "") params.set("skill", filters.skill.trim().toLowerCase());
+  const q = params.toString();
+  return q === "" ? "/api/agents" : `/api/agents?${q}`;
+}
 
 function filteredAgents() {
   const q = filters.query.trim().toLowerCase();
@@ -275,11 +302,12 @@ function filteredAgents() {
 function cardHTML(a) {
   const desc = typeof a.description === "string" && a.description.trim() !== "" ? a.description : null;
   return `<div class="card agent-card" data-agent-id="${esc(a.id)}" data-role="${esc(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-category="${esc(a.category ?? "")}" data-title="${esc(a.title ?? a.id)}">` +
-    `<div class="badge-row"><span class="chip" data-category="${esc(a.category ?? "")}">${esc(categoryLabel(a.category))}</span></div>` +
+    `<div class="badge-row"><span class="chip" data-category="${esc(a.category ?? "")}">${esc(categoryLabel(a.category))}</span>${serviceBadge(a)}</div>` +
     `<h2 class="agent-title" title="${esc(a.title ?? a.id)}">${esc(a.title ?? a.id)}</h2>` +
     `<div class="agent-id">${esc(a.id)}</div>` +
     (desc === null ? "" : `<p class="agent-desc" title="${esc(desc)}">${esc(desc)}</p>`) +
     `${trustRow(a.id)}` +
+    `${skillsRow(a)}` +
     `<hr class="card-div" />` +
     `<div class="agent-foot">${priceTag(a.price)}<button class="btn hire-btn" data-id="${esc(a.id)}" data-price="${Number.isInteger(a.price) ? a.price : ""}">Hire Agent</button></div>` +
     `</div>`;
@@ -316,6 +344,8 @@ function renderChips() {
   const holder = $("active-chips");
   const chips = [];
   if (filters.category !== "") chips.push({ key: "category", label: categoryLabel(filters.category) });
+  if (filters.service_type !== "") chips.push({ key: "service_type", label: SERVICE_LABELS[filters.service_type] ?? filters.service_type });
+  if (filters.skill.trim() !== "") chips.push({ key: "skill", label: `skill: ${filters.skill.trim()}` });
   if (filters.query.trim() !== "") chips.push({ key: "query", label: `“${filters.query.trim()}”` });
   if (filters.sort !== "featured") chips.push({ key: "sort", label: $("market-sort").selectedOptions[0].textContent });
   holder.innerHTML = chips.map((c) => `<button class="chip active" data-chip="${c.key}">${esc(c.label)} ✕</button>`).join("") +
@@ -323,7 +353,18 @@ function renderChips() {
   for (const btn of holder.querySelectorAll("[data-chip]")) {
     btn.addEventListener("click", () => {
       const key = btn.dataset.chip;
+      let reload = false;
       if (key === "category" || key === "__all") filters.category = "";
+      if (key === "service_type" || key === "__all") {
+        filters.service_type = "";
+        $("market-service-type").value = "";
+        reload = true;
+      }
+      if (key === "skill" || key === "__all") {
+        filters.skill = "";
+        $("market-skill").value = "";
+        reload = true;
+      }
       if (key === "query" || key === "__all") {
         filters.query = "";
         $("market-search").value = "";
@@ -333,7 +374,8 @@ function renderChips() {
         $("market-sort").value = "featured";
       }
       syncCategoryControls();
-      render();
+      if (reload) load();
+      else render();
     });
   }
 }
@@ -352,10 +394,14 @@ function render() {
       filters.query = "";
       filters.category = "";
       filters.sort = "featured";
+      filters.service_type = "";
+      filters.skill = "";
       $("market-search").value = "";
       $("market-sort").value = "featured";
+      $("market-service-type").value = "";
+      $("market-skill").value = "";
       syncCategoryControls();
-      render();
+      load();
     });
     return;
   }
@@ -383,8 +429,9 @@ function skeleton() {
 async function load() {
   skeleton();
   try {
-    const res = await fetch("/api/agents");
-    if (!res.ok) throw new Error(`GET /api/agents -> ${res.status}`);
+    const path = discoveryQuery();
+    const res = await fetch(path);
+    if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
     const { result } = await res.json();
     allAgents = result.agents;
     const counts = new Map();
@@ -429,6 +476,19 @@ $("market-category").addEventListener("change", (e) => {
   filters.category = e.target.value;
   syncCategoryControls();
   render();
+});
+
+$("market-service-type").addEventListener("change", (e) => {
+  filters.service_type = e.target.value;
+  load();
+});
+
+let skillTimer = null;
+$("market-skill").addEventListener("input", (e) => {
+  filters.skill = e.target.value;
+  // Debounced server round-trip: one query per pause, not per keystroke.
+  if (skillTimer !== null) clearTimeout(skillTimer);
+  skillTimer = setTimeout(load, 400);
 });
 
 $("modal-close").addEventListener("click", () => {

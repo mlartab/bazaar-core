@@ -37,6 +37,20 @@ export const SCHEMAS = {
       // Seller-declared delivery SLA in seconds. Wide static bounds here;
       // the deployment env tightens them per request at the handler.
       delivery_sla_seconds: { type: "integer", min: 60, max: 86400 },
+      // Service strategy: a fixed-price endpoint, a negotiable service, or
+      // raw compute. Optional; the handler defaults absent to "negotiation"
+      // so every existing payload keeps validating unchanged.
+      service_type: { type: "string", allowed: ["endpoint", "negotiation", "compute"] },
+      // Absolute floor for negotiation services. Ignored for endpoint and
+      // compute, where the listing price is the floor. Optional; absent
+      // stays null and the referee falls back to 1.
+      min_price: { type: "integer", min: 1, max: 100000 },
+      // Discovery tags: at most 10 short non-empty strings. Optional;
+      // absent stays null.
+      skills: { type: "array", maxItems: 10, items: { type: "string", nonEmpty: true, maxLength: 64 } },
+      // Interaction descriptor (endpoint URL/method/schema, portfolio
+      // links). Optional plain object; absent stays null.
+      metadata: { type: "object", maxKeys: 20 },
     },
   },
   patchAgent: {
@@ -49,6 +63,11 @@ export const SCHEMAS = {
       price: { type: "integer", min: 1, max: 100000 },
       category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech", "speech_transcription"] },
       delivery_sla_seconds: { type: "integer", min: 60, max: 86400 },
+      // Listing strategy: same shapes as registration; all optional here.
+      service_type: { type: "string", allowed: ["endpoint", "negotiation", "compute"] },
+      min_price: { type: "integer", min: 1, max: 100000 },
+      skills: { type: "array", maxItems: 10, items: { type: "string", nonEmpty: true, maxLength: 64 } },
+      metadata: { type: "object", maxKeys: 20 },
     },
   },
   reviewNote: {
@@ -136,11 +155,16 @@ function matchesWhen(request, clause) {
 function checkType(rule, value) {
   if (rule.type === "string") return typeof value === "string";
   if (rule.type === "integer") return Number.isInteger(value);
+  if (rule.type === "array") return Array.isArray(value);
+  if (rule.type === "object") return typeof value === "object" && value !== null && !Array.isArray(value);
   return false;
 }
 
 function typeName(rule) {
-  return rule.type === "integer" ? "an integer" : "a string";
+  if (rule.type === "integer") return "an integer";
+  if (rule.type === "array") return "an array";
+  if (rule.type === "object") return "an object";
+  return "a string";
 }
 
 export function validate(endpoint, request) {
@@ -187,6 +211,28 @@ export function validate(endpoint, request) {
     }
     if (rule.allowed !== undefined && !rule.allowed.includes(value)) {
       return fail(name, `field ${name} must be one of: ${rule.allowed.join(", ")}`);
+    }
+    if (rule.type === "array" && rule.maxItems !== undefined && value.length > rule.maxItems) {
+      return fail(name, `field ${name} must have at most ${rule.maxItems} items`);
+    }
+    if (rule.type === "array" && rule.items !== undefined) {
+      for (let i = 0; i < value.length; i++) {
+        const el = value[i];
+        if (rule.items.type === "string" && typeof el !== "string") {
+          return fail(name, `field ${name}[${i}] must be a string`);
+        }
+        if (typeof el === "string") {
+          if (rule.items.nonEmpty && el.length === 0) {
+            return fail(name, `field ${name}[${i}] must not be empty`);
+          }
+          if (rule.items.maxLength !== undefined && el.length > rule.items.maxLength) {
+            return fail(name, `field ${name}[${i}] must be at most ${rule.items.maxLength} characters`);
+          }
+        }
+      }
+    }
+    if (rule.type === "object" && rule.maxKeys !== undefined && Object.keys(value).length > rule.maxKeys) {
+      return fail(name, `field ${name} must have at most ${rule.maxKeys} keys`);
     }
   }
   return { ok: true };

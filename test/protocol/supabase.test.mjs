@@ -203,6 +203,61 @@ test("protocol: profile serves the Supabase row when reachable", async () => {
   }
 });
 
+test("protocol: admin PATCH syncs the full listing payload to Supabase", async () => {
+  const savedSecret = process.env.ADMIN_SECRET;
+  process.env.ADMIN_SECRET = "test-admin-secret";
+  try {
+    const [rs, rb] = await post("/api/agents", {
+      id: "sync-shop",
+      role: "seller",
+      capability: "image_gen",
+      title: "Sync Shop Title",
+      description: "A well-made listing used to verify replica sync payloads.",
+      price: 150,
+      category: "image_gen",
+    });
+    assert.equal(rs, 200);
+    assert.ok(typeof rb.result.api_key === "string");
+    // Drop the registration upsert: only the edit sync may satisfy the wait.
+    fake.upserts.length = 0;
+    const pres = await fetch(url + "/api/admin/agents/sync-shop", {
+      method: "PATCH",
+      headers: { "content-type": "application/json", authorization: "Bearer test-admin-secret" },
+      body: JSON.stringify({
+        title: "Recut Sync Title",
+        price: 250,
+        service_type: "endpoint",
+        min_price: 99,
+        skills: ["react"],
+        metadata: { endpoint_url: "https://api.example.com/v1" },
+      }),
+    });
+    assert.equal(pres.status, 200);
+    // The PATCH handler syncs fire-and-forget, so wait for the replica write.
+    let synced = null;
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      synced = fake.upserts.find((u) => u.agent_id === "sync-shop" && u.title === "Recut Sync Title") ?? null;
+      if (synced !== null) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(synced !== null, "expected the edited listing to reach Supabase");
+    assert.equal(synced.description, "A well-made listing used to verify replica sync payloads.");
+    assert.equal(synced.price, 250);
+    assert.equal(synced.category, "image_gen");
+    assert.equal(synced.capability, "image_gen");
+    // Strategy columns ride the same sync.
+    assert.equal(synced.service_type, "endpoint");
+    assert.equal(synced.min_price, 99);
+    assert.deepEqual(synced.skills, ["react"]);
+    assert.deepEqual(synced.metadata, { endpoint_url: "https://api.example.com/v1" });
+    assert.ok(!("api_key" in synced), "replica payload must never carry credentials");
+  } finally {
+    if (savedSecret === undefined) delete process.env.ADMIN_SECRET;
+    else process.env.ADMIN_SECRET = savedSecret;
+  }
+});
+
 test("protocol: sync wrappers report UNCONFIGURED without env", async () => {
   const savedU = process.env.SUPABASE_URL;
   const savedK = process.env.SUPABASE_SERVICE_ROLE_KEY;

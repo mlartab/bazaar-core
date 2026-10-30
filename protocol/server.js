@@ -32,16 +32,44 @@ export function pruneIdempotency(map, now, ttlMs) {
   }
 }
 
+// Registration anti-spam window and safety cap. The window matches the
+// hourly check below; the cap bounds the map when X-Forwarded-For values
+// are spoofed faster than the sweep can prune them.
+export const REG_ATTEMPT_WINDOW_MS = 60 * 60 * 1000;
+export const MAX_REG_IPS = 10000;
+
+// Pure reaper for the regAttempts map: an IP survives only while at least
+// one of its timestamps falls inside the window (same strict bound as the
+// request-path filter). Exported so tests can prove the hourly policy
+// without waiting an hour.
+export function pruneRegAttempts(map, now, windowMs) {
+  for (const [ip, stamps] of map) {
+    if (!Array.isArray(stamps) || !stamps.some((at) => at > now - windowMs)) map.delete(ip);
+  }
+}
+
+// Hard bound for the regAttempts map: evict oldest-first (Maps preserve
+// insertion order) so a spoofed-IP flood cannot grow memory without bound
+// between sweeps. At most one eviction per insert keeps this O(1).
+export function capRegAttempts(map, maxIps) {
+  while (map.size > maxIps) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
+
 // Boot recovery: the ledger is in-memory but deals are SQLite, so a restart
 // vaporizes escrow. Replay every live lock in creation (rowid) order: each
-// AGREED/ESCROW_LOCKED deal re-deposits its price into the buyer's balance
+// deal past acceptance re-deposits its price into the buyer's balance
 // (mirroring POST /api/deals) and re-locks it. NEGOTIATING deals hold no
 // lock by design and are skipped. Per-deal try/catch so one corrupt row
 // cannot abort the rest; every outcome is returned for the caller to log.
 export function reconcileLedger({ store, ledger }) {
+  const LOCKED_STATES = new Set(["AGREED", "ESCROW_LOCKED", "EXECUTING", "DELIVERED", "VERIFYING"]);
   const outcomes = [];
   for (const deal of store.listDeals()) {
-    if (deal.state !== "AGREED" && deal.state !== "ESCROW_LOCKED") continue;
+    if (!LOCKED_STATES.has(deal.state)) continue;
     try {
       // Zero entries keep the invariant (total unchanged) while satisfying
       // settle, which refuses to pay a seller with no balance account at
@@ -94,7 +122,11 @@ function normalizeErrorCode(code) {
 }
 
 function toContractError(result) {
-  return error(normalizeErrorCode(result.code), result.message);
+  const out = error(normalizeErrorCode(result.code), result.message);
+  // Referee price rejections carry machine-readable bounds; every other
+  // envelope leaves the field absent so the contract never gains nulls.
+  if (result.bounds !== undefined) out.bounds = result.bounds;
+  return out;
 }
 
 // Conflict precision: state races are 409s, not 400s. Anything else keeps
@@ -195,8 +227,8 @@ export function createApp(dbPath) {
     logger.warn("ADMIN_SECRET is not set; all /api/admin/* routes will answer 401");
   }
   const ledger = createLedger();
-  // Boot recovery runs before the first request: any AGREED/ESCROW_LOCKED
-  // rows left by a previous process get their in-memory locks replayed, so
+  // Boot recovery runs before the first request: any rows past acceptance
+  // left by a previous process get their in-memory locks replayed, so
   // a restart never vaporizes escrow. Failures are logged, never thrown.
   try {
     const recovered = reconcileLedger({ store, ledger });
@@ -233,12 +265,15 @@ export function createApp(dbPath) {
   const checkRegistrationCap = (req) => {
     const cap = registrationPerIpPerHour();
     const now = Date.now();
-    const windowStart = now - 60 * 60 * 1000;
+    const windowStart = now - REG_ATTEMPT_WINDOW_MS;
     const ip = clientIp(req);
     const recent = (regAttempts.get(ip) ?? []).filter((at) => at > windowStart);
     if (recent.length >= cap) return false;
     recent.push(now);
     regAttempts.set(ip, recent);
+    // Spoofed-IP flood guard on the insert path: one oldest-first eviction
+    // per insert keeps the map bounded even between sweeps.
+    capRegAttempts(regAttempts, MAX_REG_IPS);
     return true;
   };
   const events = [];
@@ -250,6 +285,11 @@ export function createApp(dbPath) {
   const idemSweep = setInterval(() => {
     try {
       pruneIdempotency(idempotency, Date.now(), IDEMPOTENCY_TTL_MS);
+      // The registration tracker rides the same unref'd tick: hourly
+      // entries age out here, and the cap trims any spoofed-IP surplus
+      // the insert path could not evict on its own.
+      pruneRegAttempts(regAttempts, Date.now(), REG_ATTEMPT_WINDOW_MS);
+      capRegAttempts(regAttempts, MAX_REG_IPS);
     } catch {
       // Reaping must never kill the process; the next tick retries.
     }
@@ -378,18 +418,35 @@ export function createApp(dbPath) {
     if (!Object.hasOwn(ledger.balances, agentId)) ledger.balances[agentId] = 0;
   };
 
-  const refereeContext = (deal) => {
+  const refereeContext = (deal, agent) => {
     const rows = store.listMoves(deal.id);
+    const offers = rows.filter((row) => row.kind === "OFFER");
+    // The moving agent's own side decides which price rule binds: buyers
+    // are capped by what they can lock, sellers by their listing floor.
+    // Endpoints and compute are strict (price is the floor); negotiation
+    // services use min_price so custom work can settle below list.
+    const role = agent !== undefined && agent !== null && agent.id === deal.seller ? "seller" : "buyer";
+    const listing = store.getAgentDetail(deal.seller);
+    const listingPrice = listing?.price;
+    const serviceType = listing?.service_type ?? "negotiation";
     return {
       state: deal.state,
-      // Moves are submitted on the buyer's behalf: only the buyer locks
-      // funds, so budget (not floor) is the binding price rule.
-      role: "buyer",
+      role,
       budget: ledger.balances[deal.buyer] ?? deal.price,
+      // Seller floor follows the service strategy: fixed-price listings
+      // hold list, negotiable ones hold min_price (1 when unset, which any
+      // positive price clears — sellers without listings negotiate exactly
+      // as before).
+      floor: serviceType === "negotiation"
+        ? (Number.isInteger(listing?.min_price) ? listing.min_price : 1)
+        : (Number.isInteger(listingPrice) ? listingPrice : 1),
+      // Standing offer both sides negotiate against; null before the first
+      // OFFER lands.
+      last_offer: offers.length > 0 ? offers[offers.length - 1].price : null,
       seenKeys: rows.map((row) => row.key),
       // OFFER prices only: ACCEPTs are agreements, not offers, and must
       // never trip DUPLICATE_OFFER (see the referee rule).
-      seenOffers: rows.filter((row) => row.kind === "OFFER").map((row) => row.price),
+      seenOffers: offers.map((row) => row.price),
     };
   };
 
@@ -415,9 +472,27 @@ export function createApp(dbPath) {
 
   const handlers = {
     // Public by design: a marketplace is useless if buyers cannot see who
-    // is selling, what they sell, and how much stake they hold.
-    "GET /api/agents": () => {
-      return [200, { ok: true, state: null, allowedMoves: [], result: { agents: store.listAgents() } }];
+    // is selling, what they sell, and how much stake they hold. Discovery
+    // filters keep the response token-efficient: an agent narrows by skill,
+    // strategy, and ceiling instead of scraping the whole directory.
+    // Existing list fields are unchanged (the console renders them), the
+    // strategy columns ride alongside.
+    "GET /api/agents": (_body, _id, _agent, query = {}) => {
+      const skill = typeof query?.skill === "string" && query.skill.length > 0 ? query.skill : undefined;
+      const rawType = typeof query?.service_type === "string" ? query.service_type : "";
+      if (rawType !== "" && !["endpoint", "negotiation", "compute"].includes(rawType)) {
+        return [400, error("INVALID_SCHEMA", "field service_type must be one of: endpoint, negotiation, compute")];
+      }
+      const service_type = rawType === "" ? undefined : rawType;
+      let max_price;
+      if (query?.max_price !== undefined && query.max_price !== "") {
+        const n = Number(query.max_price);
+        if (!Number.isInteger(n) || n < 1) {
+          return [400, error("INVALID_SCHEMA", "field max_price must be a positive integer")];
+        }
+        max_price = n;
+      }
+      return [200, { ok: true, state: null, allowedMoves: [], result: { agents: store.listAgents({ skill, service_type, max_price }) } }];
     },
 
     // Public: how a registered agent polls its own lifecycle outcome.
@@ -561,6 +636,10 @@ export function createApp(dbPath) {
         return [429, error("RATE_LIMITED", "too many registrations from this address; try again later")];
       }
       const category = body.category === "speech_transcription" ? "speech" : body.category;
+      // Listing strategy: absent means a negotiable service, so every
+      // existing payload keeps its behavior. New fields ride straight
+      // into the store; the schema already bound their shapes.
+      const serviceType = body.service_type ?? "negotiation";
       // Deployment-tightened SLA bounds ride beside the wide static
       // schema range; out-of-env values are a schema-shaped 400.
       const sla = deliverySlaBounds();
@@ -574,7 +653,7 @@ export function createApp(dbPath) {
       const apiKey = randomUUID();
       const probation = autoApprove ? 1 : 0;
       const status = autoApprove ? "ACTIVE" : "PENDING";
-      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, category, api_key: apiKey, status, probation, delivery_sla_seconds: slaSeconds });
+      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, category, api_key: apiKey, status, probation, delivery_sla_seconds: slaSeconds, service_type: serviceType, min_price: body.min_price ?? null, skills: body.skills, metadata: body.metadata });
       ensureAccount(body.id);
       emit({ type: "AGENT_REGISTERED", agentId: body.id, role: body.role });
       // Outbound replica only: after the SQLite commit, never awaited, so
@@ -655,8 +734,13 @@ export function createApp(dbPath) {
       const checked = validateSchema("move", merged);
       if (!checked.ok) return [400, toContractError(checked)];
       const move = { key: merged.key, kind: merged.kind, price: merged.price };
-      const ruled = validateReferee(move, refereeContext(deal));
-      if (!ruled.ok) return stageError(ruled);
+      const ruled = validateReferee(move, refereeContext(deal, agent));
+      if (!ruled.ok) {
+        // Context-aware rejection: the agent learns the deal state, its
+        // legal replies, and the exact numeric bounds in one round trip.
+        const [status, payload] = stageError(ruled);
+        return [status, { ...payload, state: deal.state, allowedMoves: movesFor(deal.state) }];
+      }
       let next = null;
       if (merged.kind === "ACCEPT") {
         const advanced = transition(deal, "AGREED");
@@ -711,10 +795,10 @@ export function createApp(dbPath) {
         return [403, error("FORBIDDEN", `only the buyer can capture escrow for deal ${id}`)];
       }
       if (deal.state === "NEGOTIATING") {
-        return [402, error("NEEDS_ACCEPTANCE", `deal ${id} has no accepted price to pay yet`)];
+        return [402, { ...error("NEEDS_ACCEPTANCE", `deal ${id} has no accepted price to pay yet`), state: deal.state, allowedMoves: movesFor(deal.state) }];
       }
       if (deal.state !== "AGREED") {
-        return [409, error("ALREADY_LOCKED", `deal ${id} is ${deal.state}; its single escrow lock already happened`)];
+        return [409, { ...error("ALREADY_LOCKED", `deal ${id} is ${deal.state}; its single escrow lock already happened`), state: deal.state, allowedMoves: movesFor(deal.state) }];
       }
       if (ledger.locks[id] === undefined) {
         const locked = lock(ledger, deal.buyer, id, deal.price);
@@ -1008,7 +1092,7 @@ export function createApp(dbPath) {
         return [status, toContractError(saved)];
       }
       recordAudit({ action: "EDIT", agentId: id, from: null, to: null, reason: null });
-      syncProfile({ ...store.getAgent(id), ...store.getAgentStatus(id), capability: store.getAgentCapability(id), category: store.getAgentCategory(id) }).catch(() => {});
+      syncProfile(store.getAgentDetail(id)).catch(() => {});
       return [200, { ok: true, state: null, allowedMoves: [], result: store.getAgentStatus(id) }];
     },
 
@@ -1041,7 +1125,7 @@ export function createApp(dbPath) {
     // discovery filtering, failures isolated from moderation. Capability
     // rides along explicitly — neither narrow reader carries it.
     syncAgentStatus(id, to, note).catch(() => {});
-    syncProfile({ ...store.getAgent(id), ...store.getAgentStatus(id), capability: store.getAgentCapability(id), category: store.getAgentCategory(id) }).catch(() => {});
+    syncProfile(store.getAgentDetail(id)).catch(() => {});
     return [200, { ok: true, state: null, allowedMoves: [], result: store.getAgentStatus(id) }];
   }
 
@@ -1476,15 +1560,15 @@ export function createApp(dbPath) {
   return { server, store, ledger, sessions, stopIdemSweep: () => clearInterval(idemSweep), closeAllStreams };
 }
 
-export function startServer({ dbPath, port = 0 } = {}) {
+export function startServer({ dbPath, port = 0, host = "127.0.0.1" } = {}) {
   const { server, store, sessions, stopIdemSweep, closeAllStreams } = createApp(dbPath);
   return new Promise((resolve, reject) => {
     server.on("error", reject);
-    server.listen(port, "0.0.0.0", () => {
+    server.listen(port, host, () => {
       const address = server.address();
       const actual = typeof address === "object" && address !== null ? address.port : port;
       resolve({
-        url: `http://0.0.0.0:${actual}`,
+        url: `http://${host}:${actual}`,
         port: actual,
         close: () =>
           new Promise((done) => {

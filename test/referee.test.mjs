@@ -129,6 +129,35 @@ test("referee: a price move with no budget or floor is rejected", () => {
   );
 });
 
+test("referee: price rejections carry bounds with the standing offer", () => {
+  // An under-offer names the constraint and where the other side stands,
+  // so the agent can correct in one round trip instead of binary-searching.
+  const under = validate({ key: "u1", kind: "OFFER", price: 50 }, ctx({ role: "seller", floor: 100, last_offer: 90 }));
+  assert.equal(under.ok, false);
+  assert.equal(under.code, "UNDER_FLOOR");
+  assert.deepEqual(under.bounds, { your_offer: 50, floor: 100, last_offer: 90 });
+  assert.ok(!("budget" in under.bounds), "seller bounds never leak the buyer budget");
+
+  const over = validate({ key: "o1", kind: "OFFER", price: 120 }, ctx({ budget: 100, last_offer: 90 }));
+  assert.equal(over.ok, false);
+  assert.equal(over.code, "OVER_BUDGET");
+  assert.deepEqual(over.bounds, { your_offer: 120, budget: 100, last_offer: 90 });
+  assert.ok(!("floor" in over.bounds), "buyer bounds never leak the seller floor");
+
+  // Missing data still reports what was tried and the (empty) standing offer.
+  const noBudget = validate({ key: "nb9", kind: "OFFER", price: 50 }, ctx());
+  assert.equal(noBudget.code, "BUDGET_REQUIRED");
+  assert.deepEqual(noBudget.bounds, { your_offer: 50, last_offer: null });
+  const noFloor = validate({ key: "nf9", kind: "OFFER", price: 50 }, ctx({ role: "seller" }));
+  assert.equal(noFloor.code, "FLOOR_REQUIRED");
+  assert.deepEqual(noFloor.bounds, { your_offer: 50, last_offer: null });
+
+  // Non-price rejections stay lean: no bounds on vocabulary errors.
+  const offMenu = validate({ key: "om1", kind: "CHEAT" }, ctx({ budget: 100, floor: 10, last_offer: 90 }));
+  assert.equal(offMenu.code, "OFF_MENU");
+  assert.ok(!("bounds" in offMenu));
+});
+
 test("referee: a malformed context returns INVALID_CONTEXT", () => {
   const move = { key: "t1", kind: "OFFER", price: 50 };
   const good = { budget: 100, floor: 10 };

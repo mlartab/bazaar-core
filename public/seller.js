@@ -105,6 +105,31 @@ const CATEGORY_LABELS = {
 
 const categoryLabel = (c) => CATEGORY_LABELS[c] ?? "Uncategorized";
 
+// Strategy card: the seller's own listing strategy, straight from the
+// public directory row. Pending (unapproved) sellers see a queue note
+// instead — the operator decides what goes live, never this pane.
+function renderStrategy(me, agents) {
+  const card = $("strategy-card");
+  const row = agents.find((a) => a.id === me.id) ?? null;
+  if (row === null) {
+    card.hidden = false;
+    $("strategy-badge").innerHTML = `<span class="pill pending">Pending review</span>`;
+    $("strategy-line").textContent = "Your listing is in the operator review queue. Strategy appears here once approved.";
+    $("strategy-skills").innerHTML = "";
+    return;
+  }
+  const svc = row.service_type === "endpoint" || row.service_type === "compute" ? row.service_type : "negotiation";
+  const label = svc === "negotiation" ? "Negotiation" : svc === "endpoint" ? "Endpoint" : "Compute";
+  const line = svc === "negotiation"
+    ? (Number.isInteger(row.min_price) ? `Open to offers from ${row.min_price} CR.` : "Open to offers — no floor set.")
+    : (Number.isInteger(row.price) ? `Fixed price: ${row.price} CR per call.` : "Fixed price: unpriced.");
+  card.hidden = false;
+  $("strategy-badge").innerHTML = `<span class="pill svc-${esc(svc)}">${esc(label)}</span>`;
+  $("strategy-line").textContent = line;
+  const skills = Array.isArray(row.skills) ? row.skills.filter((s) => typeof s === "string").slice(0, 10) : [];
+  $("strategy-skills").innerHTML = skills.map((s) => `<span class="skill-tag">${esc(s)}</span>`).join("");
+}
+
 // Storefront: every approved listing under this seller's namespace — the
 // seller's own record plus any `${id}:suffix` sub-listings created from the
 // Add New Listing modal — grouped by category like the marketplace.
@@ -114,6 +139,7 @@ async function renderStorefront(me) {
     const res = await fetch("/api/agents");
     if (!res.ok) throw new Error(`GET /api/agents -> ${res.status}`);
     const { result } = await res.json();
+    renderStrategy(me, result.agents);
     const mine = result.agents.filter((a) => a.id === me.id || a.id.startsWith(`${me.id}:`));
     if (mine.length === 0) {
       box.innerHTML = `<p class="sub">No live listings yet. New listings appear here after operator approval.</p>`;

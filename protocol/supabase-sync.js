@@ -21,6 +21,10 @@ export const PROFILE_COLUMNS = Object.freeze([
   "description",
   "price",
   "category",
+  "service_type",
+  "min_price",
+  "skills",
+  "metadata",
   // Syncable but never sourced from SQLite (emails live only in Supabase;
   // link-email passes them explicitly). Still allowlisted so the transport
   // can carry them.
@@ -44,7 +48,14 @@ export function buildProfilePayload(row) {
     description: typeof row.description === "string" ? row.description : null,
     price: Number.isInteger(row.price) ? row.price : null,
     category: typeof row.category === "string" ? row.category : null,
+    service_type: typeof row.service_type === "string" ? row.service_type : "negotiation",
+    min_price: Number.isInteger(row.min_price) ? row.min_price : null,
   };
+  // Structured strategy columns ride as native JSON (jsonb on the replica),
+  // present only when set — partial syncs (status transitions) must never
+  // clobber them with nulls.
+  if (row.skills !== undefined) payload.skills = row.skills;
+  if (row.metadata !== undefined && row.metadata !== null) payload.metadata = row.metadata;
   // Present only when explicitly supplied (link-email): absent emails are
   // omitted, never nulled, so routine syncs cannot clobber a linked address
   // on merge-duplicates upserts.

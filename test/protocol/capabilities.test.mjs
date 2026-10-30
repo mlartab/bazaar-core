@@ -134,6 +134,8 @@ test("protocol: profile payload carries capability verbatim and never secrets", 
     description: "d",
     price: 10,
     category: null,
+    service_type: "negotiation",
+    min_price: null,
   });
   assert.equal(buildProfilePayload(null), null);
   assert.equal(buildProfilePayload({ role: "seller" }), null);

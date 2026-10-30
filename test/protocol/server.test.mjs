@@ -326,3 +326,58 @@ test("protocol: server lists events", async () => {
   assert.ok(body.result.events.length > 0);
   assert.ok(body.result.events.some((e) => e.type === "DEAL_OPENED"));
 });
+
+test("protocol: agent discovery filters by skill, service_type, and max_price", async () => {
+  process.env.ADMIN_SECRET = "test-admin-secret";
+  const register = async (body) => {
+    const [s, b] = await post("/api/agents", body);
+    assert.equal(s, 200, body.id);
+    return b.result.api_key;
+  };
+  await register({ id: "filt-neg", role: "seller", service_type: "negotiation", price: 200, min_price: 50, skills: ["react", "node"], metadata: { portfolio: "https://example.com/work" } });
+  await register({ id: "filt-ep", role: "seller", service_type: "endpoint", price: 80, skills: ["react"] });
+  await register({ id: "filt-compute", role: "seller", service_type: "compute", price: 500, skills: ["python"] });
+  for (const [i, id] of ["filt-neg", "filt-ep", "filt-compute"].entries()) {
+    const approved = await fetch(url + `/api/admin/agents/${id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": `approve-filt-${i}`, authorization: "Bearer test-admin-secret" },
+      body: JSON.stringify({ message: "listed" }),
+    });
+    assert.equal(approved.status, 200, id);
+  }
+  const list = async (q) => {
+    const res = await fetch(url + `/api/agents${q}`);
+    assert.equal(res.status, 200, q);
+    return (await res.json()).result.agents;
+  };
+  const bySkill = await list("?skill=react");
+  assert.ok(bySkill.some((a) => a.id === "filt-neg"));
+  assert.ok(bySkill.some((a) => a.id === "filt-ep"));
+  assert.ok(!bySkill.some((a) => a.id === "filt-compute"));
+  // Exact tags only: a substring must not match.
+  assert.ok(!(await list("?skill=reac")).some((a) => a.id === "filt-neg"));
+  const byType = await list("?service_type=negotiation");
+  assert.ok(byType.some((a) => a.id === "filt-neg"));
+  assert.ok(!byType.some((a) => a.id === "filt-ep"));
+  // Negotiation resolves to its floor (50), endpoints to list price (80).
+  const cheap = await list("?max_price=90");
+  const cheapIds = cheap.map((a) => a.id);
+  assert.ok(cheapIds.includes("filt-neg") && cheapIds.includes("filt-ep"));
+  assert.ok(!cheapIds.includes("filt-compute"));
+  const cheapest = await list("?max_price=40");
+  assert.ok(!cheapest.some((a) => ["filt-neg", "filt-ep", "filt-compute"].includes(a.id)));
+  // Combined filters narrow to one row with the strategy columns present.
+  const one = await list("?skill=react&service_type=endpoint&max_price=90");
+  assert.deepEqual(one.map((a) => a.id), ["filt-ep"]);
+  // Strategy columns ride alongside the existing storefront fields.
+  const neg = (await list("?skill=node")).find((a) => a.id === "filt-neg");
+  assert.deepEqual(neg.skills, ["react", "node"]);
+  assert.equal(neg.service_type, "negotiation");
+  assert.equal(neg.min_price, 50);
+  assert.equal(neg.price, 200);
+  assert.deepEqual(neg.metadata, { portfolio: "https://example.com/work" });
+  // Unknown strategy and non-integer ceilings are caller errors, not filters.
+  assert.equal((await fetch(url + "/api/agents?service_type=auction")).status, 400);
+  assert.equal((await fetch(url + "/api/agents?max_price=abc")).status, 400);
+  assert.equal((await fetch(url + "/api/agents?max_price=0")).status, 400);
+});

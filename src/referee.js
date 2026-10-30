@@ -89,13 +89,29 @@ function isValidContext(ctx) {
   return true;
 }
 
+// Only the price rules carry bounds: they are the rejections an agent can
+// act on (offer lower / raise the floor), so they name the exact numbers.
+// your_offer is what was just tried; last_offer is the standing OFFER both
+// sides negotiate against; budget/floor ride along only for the role they
+// constrain, and only when the caller supplied them.
+const PRICE_CODES = new Set(["OVER_BUDGET", "BUDGET_REQUIRED", "UNDER_FLOOR", "FLOOR_REQUIRED"]);
+
+function boundsFor(move, ctx) {
+  const bounds = { your_offer: move.price ?? null, last_offer: ctx.last_offer ?? null };
+  if (ctx.role === "buyer" && ctx.budget !== undefined) bounds.budget = ctx.budget;
+  if (ctx.role === "seller" && ctx.floor !== undefined) bounds.floor = ctx.floor;
+  return bounds;
+}
+
 export function validate(move, ctx) {
   if (!isValidContext(ctx)) {
     return { ok: false, code: "INVALID_CONTEXT", message: "context must have array or Set seenKeys and seenOffers" };
   }
   for (const rule of RULES) {
     if (!rule.check(move, ctx)) {
-      return { ok: false, code: rule.code, message: rule.message };
+      const failure = { ok: false, code: rule.code, message: rule.message };
+      if (PRICE_CODES.has(rule.code)) failure.bounds = boundsFor(move, ctx);
+      return failure;
     }
   }
   return { ok: true };

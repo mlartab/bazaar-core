@@ -169,6 +169,21 @@ export function openStore(path) {
     } catch {
       // Column present: nothing to migrate.
     }
+    // Listing strategy columns. Same guarded pattern: the throws mean
+    // "already there". Old rows read as negotiation services with no
+    // floor, tags, or descriptor — identical to registering without them.
+    for (const column of ["service_type TEXT DEFAULT 'negotiation'", "min_price INTEGER", "skills_json TEXT", "metadata_json TEXT"]) {
+      try {
+        db.exec(`ALTER TABLE agents ADD COLUMN ${column}`);
+      } catch {
+        // Column present: nothing to migrate.
+      }
+    }
+    try {
+      db.exec("UPDATE agents SET service_type = 'negotiation' WHERE service_type IS NULL");
+    } catch {
+      // Nothing to backfill.
+    }
     // Per-deal snapshot of the listing SLA at open time, so later listing
     // edits never change a running deal. NULL = pre-snapshot row.
     try {
@@ -209,6 +224,28 @@ export function openStore(path) {
   const get = (sql, params = []) => plain(db.prepare(sql).get(...params));
   const all = (sql, params = []) => db.prepare(sql).all(...params).map(plain);
 
+  // Listing strategy columns ride as JSON text in SQLite. Readers always
+  // get parsed values: skills degrade to [] and metadata to null when the
+  // column is missing or unparseable, never a raw JSON string or throw.
+  const parseSkills = (value) => {
+    if (typeof value !== "string" || value.length === 0) return [];
+    try {
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.filter((s) => typeof s === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const parseMetadata = (value) => {
+    if (typeof value !== "string" || value.length === 0) return null;
+    try {
+      const parsed = JSON.parse(value);
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+
   const store = {
     close() {
       db.close();
@@ -216,7 +253,7 @@ export function openStore(path) {
 
     saveAgent(agent) {
       if (!agent || !isValidId(agent.id)) return fail("BAD_ID", "agent must have a non-empty string id");
-      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, category, api_key, probation, delivery_sla_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, category, api_key, probation, delivery_sla_seconds, service_type, min_price, skills_json, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         agent.id,
         agent.role ?? null,
         agent.balance ?? null,
@@ -232,6 +269,12 @@ export function openStore(path) {
         agent.api_key ?? randomUUID(),
         agent.probation === 1 ? 1 : 0,
         agent.delivery_sla_seconds ?? 300,
+        agent.service_type ?? "negotiation",
+        agent.min_price ?? null,
+        // HTTP JSON bodies are always acyclic, so stringify cannot throw
+        // here; direct store callers must pass JSON-compatible values too.
+        agent.skills !== undefined ? JSON.stringify(agent.skills) : null,
+        agent.metadata !== undefined ? JSON.stringify(agent.metadata) : null,
       ]);
       return { ok: true };
     },
@@ -279,17 +322,48 @@ export function openStore(path) {
       // Column list frozen: existing readers assert this exact shape.
       return get("SELECT id, role, balance FROM agents WHERE id = ?", [id]) ?? null;
     },
-    listAgents() {
+    listAgents(filters = {}) {
       // The public marketplace sees only approved *seller* listings.
       // Buyers are never merchandise: even an ACTIVE buyer stays invisible
       // here by construction rather than by UI filtering. Suspension and
       // retirement change visibility only: escrows, deals, and balances
       // are untouched, so in-flight work settles naturally.
-      return all("SELECT id, role, capability, title, description, price, category FROM agents WHERE role = 'seller' AND status = 'ACTIVE' ORDER BY rowid");
+      // Discovery filters are all optional; absent means unfiltered. Skill
+      // matching uses json_each so tags stay exact, never substring hits.
+      const { skill, service_type, max_price } = filters;
+      const params = [];
+      let sql = "SELECT id, role, capability, title, description, price, category, service_type, min_price, skills_json, metadata_json FROM agents WHERE role = 'seller' AND status = 'ACTIVE'";
+      if (service_type !== undefined) {
+        sql += " AND service_type = ?";
+        params.push(service_type);
+      }
+      if (skill !== undefined) {
+        sql += " AND EXISTS (SELECT 1 FROM json_each(agents.skills_json) WHERE value = ?)";
+        params.push(skill);
+      }
+      if (max_price !== undefined) {
+        // Negotiation services resolve to their floor; fixed-price listings
+        // to their price. Unpriced rows cannot prove cheapness, so a bound
+        // excludes them while the unfiltered list keeps them.
+        sql += " AND COALESCE(CASE WHEN service_type = 'negotiation' THEN min_price ELSE price END, price) <= ?";
+        params.push(max_price);
+      }
+      sql += " ORDER BY rowid";
+      return all(sql, params).map(({ skills_json, metadata_json, ...row }) => ({
+        ...row,
+        service_type: row.service_type ?? "negotiation",
+        skills: parseSkills(skills_json),
+        metadata: parseMetadata(metadata_json),
+      }));
     },
     listAllAgents() {
       // Operator-only: moderation needs every row including hidden ones.
-      return all("SELECT id, role, balance, capability, status, status_reason, title, description, price, category FROM agents ORDER BY rowid");
+      return all("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, service_type, min_price, skills_json, metadata_json FROM agents ORDER BY rowid").map(({ skills_json, metadata_json, ...row }) => ({
+        ...row,
+        service_type: row.service_type ?? "negotiation",
+        skills: parseSkills(skills_json),
+        metadata: parseMetadata(metadata_json),
+      }));
     },
     getAgentStatus(id) {
       return get("SELECT status, status_reason FROM agents WHERE id = ?", [id]) ?? null;
@@ -329,11 +403,20 @@ export function openStore(path) {
       if (!isValidId(id)) return fail("BAD_ID", "agent must have a non-empty string id");
       const sets = [];
       const params = [];
-      for (const column of ["title", "description", "price", "category", "delivery_sla_seconds"]) {
+      for (const column of ["title", "description", "price", "category", "delivery_sla_seconds", "service_type", "min_price"]) {
         if (patch[column] !== undefined) {
           sets.push(`${column} = ?`);
           params.push(patch[column]);
         }
+      }
+      // Strategy columns ride as JSON text, matching saveAgent.
+      if (patch.skills !== undefined) {
+        sets.push("skills_json = ?");
+        params.push(JSON.stringify(patch.skills));
+      }
+      if (patch.metadata !== undefined) {
+        sets.push("metadata_json = ?");
+        params.push(JSON.stringify(patch.metadata));
       }
       if (sets.length === 0) return fail("BAD_PATCH", "patch must change at least one listing field");
       params.push(id);
@@ -444,7 +527,15 @@ export function openStore(path) {
     // frozen list shapes so existing readers never change.
     getAgentDetail(id) {
       if (!isValidId(id)) return null;
-      return get("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, COALESCE(probation, 0) AS probation FROM agents WHERE id = ?", [id]) ?? null;
+      const row = get("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, COALESCE(probation, 0) AS probation, service_type, min_price, skills_json, metadata_json FROM agents WHERE id = ?", [id]);
+      if (row === undefined || row === null) return null;
+      const { skills_json, metadata_json, ...rest } = row;
+      return {
+        ...rest,
+        service_type: rest.service_type ?? "negotiation",
+        skills: parseSkills(skills_json),
+        metadata: parseMetadata(metadata_json),
+      };
     },
     listExpiringDeals(now) {
       // Only live negotiations can time out: terminal states are done, and

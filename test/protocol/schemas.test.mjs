@@ -113,6 +113,39 @@ test("protocol: registerAgent enforces storefront listing bounds", () => {
   assert.deepEqual(validate("registerAgent", { ...base, title: "x".repeat(60), description: "x".repeat(250), price: 100000 }), { ok: true });
 });
 
+test("protocol: registerAgent accepts the listing strategy fields", () => {
+  const base = { id: "s1", role: "seller" };
+  // Full strategy payload validates.
+  assert.deepEqual(validate("registerAgent", {
+    ...base,
+    service_type: "negotiation",
+    min_price: 40,
+    skills: ["react", "node"],
+    metadata: { endpoint_url: "https://api.example.com/v1", method: "POST" },
+  }), { ok: true });
+  // All three strategies validate; absent stays valid (handler defaults it).
+  for (const service_type of ["endpoint", "negotiation", "compute"]) {
+    assert.deepEqual(validate("registerAgent", { ...base, service_type }), { ok: true });
+  }
+  // Out-of-enum strategy, non-positive floor, and over-long floor fail.
+  assert.equal(invalid("registerAgent", { ...base, service_type: "auction" }).field, "service_type");
+  assert.equal(invalid("registerAgent", { ...base, min_price: 0 }).field, "min_price");
+  assert.equal(invalid("registerAgent", { ...base, min_price: 100001 }).field, "min_price");
+  assert.equal(invalid("registerAgent", { ...base, min_price: 1.5 }).field, "min_price");
+  // Skills: at most 10, strings only, non-empty, bounded length.
+  assert.equal(invalid("registerAgent", { ...base, skills: "react" }).field, "skills");
+  assert.equal(invalid("registerAgent", { ...base, skills: Array(11).fill("x") }).field, "skills");
+  assert.equal(invalid("registerAgent", { ...base, skills: ["ok", 42] }).field, "skills");
+  assert.equal(invalid("registerAgent", { ...base, skills: [""] }).field, "skills");
+  assert.equal(invalid("registerAgent", { ...base, skills: ["x".repeat(65)] }).field, "skills");
+  assert.deepEqual(validate("registerAgent", { ...base, skills: Array(10).fill("x".repeat(64)) }), { ok: true });
+  // Metadata: plain objects only, bounded key count.
+  assert.equal(invalid("registerAgent", { ...base, metadata: ["not", "an", "object"] }).field, "metadata");
+  assert.equal(invalid("registerAgent", { ...base, metadata: "https://x" }).field, "metadata");
+  assert.equal(invalid("registerAgent", { ...base, metadata: Object.fromEntries(Array(21).fill(0).map((_, i) => [`k${i}`, i])) }).field, "metadata");
+  assert.deepEqual(validate("registerAgent", { ...base, metadata: {} }), { ok: true });
+});
+
 test("protocol: patchAgent accepts partial edits and rejects unknowns", () => {
   assert.deepEqual(validate("patchAgent", { title: "New Title" }), { ok: true });
   assert.deepEqual(validate("patchAgent", { price: 1, category: "data" }), { ok: true });

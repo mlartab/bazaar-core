@@ -132,6 +132,25 @@ test("protocol: a second pay answers 409 without a second lock", async () => {
   assert.equal(body.state, "ESCROW_LOCKED");
 });
 
+test("protocol: pay errors carry state and allowedMoves for agent self-correction", async () => {
+  const early = await postRaw("/api/deals", { id: "d-early-err", buyer: "payer", seller: "payee", price: 30 });
+  assert.equal(early.status, 200);
+  const needs = await postRaw("/api/deals/d-early-err/pay", {});
+  assert.equal(needs.status, 402);
+  assertErr(needs.body, "NEEDS_ACCEPTANCE");
+  assert.equal(needs.body.state, "NEGOTIATING");
+  assert.ok(needs.body.allowedMoves !== undefined && typeof needs.body.allowedMoves === "object");
+  assert.ok(Array.isArray(needs.body.allowedMoves.buyer) && needs.body.allowedMoves.buyer.length > 0);
+  await agreedDeal("d-twice-err", 40);
+  const first = await postRaw("/api/deals/d-twice-err/pay", {});
+  assert.equal(first.status, 200);
+  const second = await postRaw("/api/deals/d-twice-err/pay", {});
+  assert.equal(second.status, 409);
+  assertErr(second.body, "ALREADY_LOCKED");
+  assert.equal(second.body.state, "ESCROW_LOCKED");
+  assert.ok(second.body.allowedMoves !== undefined && typeof second.body.allowedMoves === "object");
+});
+
 test("protocol: pay rejects a non-empty body and an unknown deal", async () => {
   const extra = await postRaw("/api/deals/d-twice/pay", { fee: 1 });
   assert.equal(extra.status, 400);

@@ -57,17 +57,8 @@ function connectStream() {
 
 const secret = () => localStorage.getItem(SECRET_KEY) ?? "";
 
-// Tooltips live on ? badges, not on the labels: every [data-tip] keeps its
-// text as the source, and one badge per element owns the hover. Runs once
-// at load; the poll loop only replaces row markup, never labeled chrome.
-for (const el of document.querySelectorAll("[data-tip]")) {
-  if (el.querySelector(":scope > .tip-badge") !== null) continue;
-  const badge = document.createElement("span");
-  badge.className = "tip-badge";
-  badge.textContent = "?";
-  badge.setAttribute("data-tip", el.getAttribute("data-tip"));
-  el.appendChild(badge);
-}
+// Native browser tooltips (title="...") on static chrome: no injected
+// badges. The poll loop only replaces row markup, never labeled chrome.
 
 // No secret, no console: the login page owns authentication.
 if (!secret()) {
@@ -606,11 +597,20 @@ function categoryOptions(selected) {
   return blank + EDIT_CATEGORIES.map((c) => `<option value="${c}"${c === selected ? " selected" : ""}>${esc(c)}</option>`).join("");
 }
 
+const EDIT_SERVICES = ["negotiation", "endpoint", "compute"];
+const SERVICE_LABELS = { negotiation: "Negotiation", endpoint: "Endpoint", compute: "Compute" };
+
+function serviceOptions(selected) {
+  return EDIT_SERVICES.map((s) => `<option value="${s}"${s === selected ? " selected" : ""}>${SERVICE_LABELS[s]}</option>`).join("");
+}
+
 function askEdit(agent) {
   // Form modal pre-filled from the row record. Blank inputs keep the
   // current value (every field has a minimum, so blanks are dropped, not
-  // sent). An all-blank submit is a no-op.
+  // sent). An all-blank submit is a no-op. The strategy select always
+  // submits; the floor only applies to negotiation services.
   if (agent === undefined || agent === null) return;
+  const currentService = EDIT_SERVICES.includes(agent.service_type) ? agent.service_type : "negotiation";
   openModal({
     title: `Edit ${agent.id}`,
     sub: "Submits PATCH /api/admin/agents/:id. Blank fields keep their values.",
@@ -625,6 +625,14 @@ function askEdit(agent) {
       `<label class="field"><span>Delivery SLA (seconds, 60–86400)</span>` +
       `<input id="f-sla" inputmode="numeric" value="${agent.delivery_sla_seconds ?? ""}" /></label>` +
       `</div>` +
+      `<div class="field-row">` +
+      `<label class="field"><span>Service type</span>` +
+      `<select id="f-svc">${serviceOptions(currentService)}</select></label>` +
+      `<label class="field"><span>Min price (CR, negotiation only)</span>` +
+      `<input id="f-min" inputmode="numeric" value="${agent.min_price ?? ""}"${currentService === "negotiation" ? "" : " disabled"} /></label>` +
+      `</div>` +
+      `<label class="field"><span>Skills (comma-separated, max 10)</span>` +
+      `<input id="f-skills" maxlength="640" placeholder="react, node, typescript" value="${esc(Array.isArray(agent.skills) ? agent.skills.join(", ") : "")}" /></label>` +
       `<label class="field"><span>Category</span>` +
       `<select id="f-cat">${categoryOptions(agent.category ?? "")}</select></label>`,
     submitLabel: "Save changes",
@@ -636,6 +644,9 @@ function askEdit(agent) {
       const priceRaw = val("#f-price");
       const slaRaw = val("#f-sla");
       const category = val("#f-cat");
+      const serviceType = document.querySelector("#f-svc").value;
+      const minRaw = val("#f-min");
+      const skillsRaw = val("#f-skills");
       if (title !== "" && (title.length < 5 || title.length > 60)) return "Title must be 5–60 characters.";
       if (description !== "" && (description.length < 20 || description.length > 250)) return "Description must be 20–250 characters.";
       if (priceRaw !== "") {
@@ -651,6 +662,19 @@ function askEdit(agent) {
       if (title !== "") patch.title = title;
       if (description !== "") patch.description = description;
       if (category !== "") patch.category = category;
+      if (serviceType !== "" && serviceType !== currentService) patch.service_type = serviceType;
+      if (minRaw !== "") {
+        if (serviceType !== "negotiation") return "Min price only applies to negotiation services.";
+        const min = Number(minRaw);
+        if (!Number.isInteger(min) || min < 1 || min > 100000) return "Min price must be a whole number from 1 to 100000 CR.";
+        patch.min_price = min;
+      }
+      if (skillsRaw !== "") {
+        const skills = skillsRaw.split(",").map((s) => s.trim()).filter((s) => s !== "");
+        if (skills.length === 0 || skills.length > 10) return "Skills must be 1–10 comma-separated tags.";
+        if (skills.some((s) => s.length > 64)) return "Each skill must be at most 64 characters.";
+        patch.skills = skills;
+      }
       if (Object.keys(patch).length === 0) return "No changes to save.";
       try {
         await adminFetch(`/api/admin/agents/${encodeURIComponent(agent.id)}`, { method: "PATCH", body: patch });
@@ -662,6 +686,15 @@ function askEdit(agent) {
       return null;
     },
   });
+  // The floor only applies to negotiation: flipping the strategy toggles
+  // the min-price field so operators cannot stage an ignored value.
+  const svcSel = document.querySelector("#f-svc");
+  const minInput = document.querySelector("#f-min");
+  if (svcSel !== null && minInput !== null) {
+    svcSel.addEventListener("change", () => {
+      minInput.disabled = svcSel.value !== "negotiation";
+    });
+  }
 }
 
 function askDelete(id) {
@@ -686,11 +719,20 @@ function askDelete(id) {
   });
 }
 
+function strategyCell(a) {
+  const svc = a.service_type === "endpoint" || a.service_type === "compute" ? a.service_type : "negotiation";
+  const label = svc === "negotiation" ? "Negotiation" : svc === "endpoint" ? "Endpoint" : "Compute";
+  const floor = svc === "negotiation"
+    ? (Number.isInteger(a.min_price) ? `floor ${a.min_price} CR` : "open floor")
+    : (Number.isInteger(a.price) ? `fixed ${a.price} CR` : "fixed price");
+  return `<td data-service-type="${esc(svc)}"><span class="pill svc-${esc(svc)}" title="${esc(floor)}">${esc(label)}</span> <span class="sub">${esc(floor)}</span></td>`;
+}
+
 function renderAgentTable(tbody, rows, isQueue) {
   tbody.innerHTML = rows
     .map(
       (a) =>
-        `<tr data-id="${esc(a.id)}" data-agent-id="${esc(a.id)}" data-status="${esc(a.status)}" data-price="${a.price ?? ""}"><td data-agent-id="${esc(a.id)}">${esc(a.id)}</td><td>${esc(a.title ?? a.id)}</td><td>${statusPill(a.status)}</td><td data-price="${a.price ?? ""}">${a.price ?? ""}</td><td>${agentActions(a)}</td></tr>`,
+        `<tr data-id="${esc(a.id)}" data-agent-id="${esc(a.id)}" data-status="${esc(a.status)}" data-price="${a.price ?? ""}" data-service-type="${esc(a.service_type ?? "negotiation")}"><td data-agent-id="${esc(a.id)}">${esc(a.id)}</td><td>${esc(a.title ?? a.id)}</td><td>${statusPill(a.status)}</td><td data-price="${a.price ?? ""}">${a.price ?? ""}</td>${strategyCell(a)}<td>${agentActions(a)}</td></tr>`,
     )
     .join("");
   for (const row of tbody.querySelectorAll("tr")) {
