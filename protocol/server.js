@@ -5,8 +5,11 @@
 // endpoint pass through. Every response uses the contract shape:
 //   { ok: true, state, allowedMoves, result }
 //   { ok: false, error: { code, message } }
-// Every POST requires an Idempotency-Key header; a repeated key replays the
-// stored success response without re-executing the request.
+// Every POST accepts an optional Idempotency-Key header; a repeated key
+// replays the stored success response without re-executing the request.
+// When the header is missing, the server auto-generates a deterministic
+// key from agent + URL + body with a short TTL, so agent retries are safe
+// without agents ever handling HTTP plumbing themselves.
 //
 // Funding model: opening a deal deposits its price into the buyer's ledger
 // balance, so the later ACCEPT lock can succeed. Registering an agent
@@ -16,19 +19,27 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import helmet from "helmet";
 import { logger } from "./logger.js";
 import { openStore } from "./db.js";
 import { createSessionManager } from "./session-manager.js";
-import { EVENT_CAP, IDEMPOTENCY_SWEEP_MS, IDEMPOTENCY_TTL_MS, MAX_BODY_SIZE, isDemoSafe, isAutoApprove, probationPriceCap, probationMaxDeals, registrationPerIpPerHour, negotiationWindowMs, inspectionTimeoutMs, deliverySlaBounds } from "./config.js";
+import { AUTO_IDEMPOTENCY_TTL_MS, EVENT_CAP, IDEMPOTENCY_SWEEP_MS, IDEMPOTENCY_TTL_MS, MAX_BODY_SIZE, isDemoSafe, isAutoApprove, probationPriceCap, probationMaxDeals, registrationPerIpPerHour, negotiationWindowMs, inspectionTimeoutMs, deliverySlaBounds } from "./config.js";
 import { buildOpenApi, buildLlmsTxt, buildAgentJson } from "./openapi.js";
 
-// Pure reaper for the idempotency map: entries older than ttlMs are dropped.
-// Exported so tests can prove the 24h policy without waiting a day.
+// Pure reaper for the idempotency map: explicit-key entries older than
+// ttlMs are dropped, auto-generated entries older than the short auto TTL
+// are dropped. Exported so tests can prove the TTL policy without waiting.
+// Deterministic auto key for headerless POSTs: agents never handle HTTP
+// plumbing, but an identical retry within the auto window still replays
+// the cached result instead of re-executing the request.
+export function autoIdempotencyKey(scope, url, bodyText) {
+  return `auto:${createHash("sha256").update(`${scope}:${url}:${bodyText}`).digest("hex")}`;
+}
 export function pruneIdempotency(map, now, ttlMs) {
   for (const [key, entry] of map) {
-    if (entry.at < now - ttlMs) map.delete(key);
+    const ttl = entry.auto === true ? AUTO_IDEMPOTENCY_TTL_MS : ttlMs;
+    if (entry.at < now - ttl) map.delete(key);
   }
 }
 
@@ -715,7 +726,7 @@ export function createApp(dbPath) {
       // sla_ms snapshots the seller's listing SLA so later listing edits
       // never change a running deal's delivery deadline.
       const slaSeconds = store.getAgentSla(body.seller) ?? deliverySlaBounds().def;
-      store.saveDeal({ id: dealId, state: "NEGOTIATING", buyer: body.buyer, seller: body.seller, price: body.price, expires_at: sessions.expiresAt(), sla_ms: slaSeconds * 1000 });
+      store.saveDeal({ id: dealId, state: "NEGOTIATING", buyer: body.buyer, seller: body.seller, price: body.price, expires_at: sessions.expiresAt(), sla_ms: slaSeconds * 1000, metadata: body.metadata });
       emit({ type: "DEAL_OPENED", dealId, state: "NEGOTIATING" });
       const deal = store.getDeal(dealId);
       return [200, { ok: true, state: deal.state, allowedMoves: movesFor(deal.state), result: { deal } }];
@@ -1491,12 +1502,7 @@ export function createApp(dbPath) {
       // (single-operator console actions, not agent retries), so they
       // skip the POST idempotency gate but still get a parsed body.
       if (method === "POST" || method === "PATCH" || method === "DELETE") {
-        const key = req.headers["idempotency-key"];
         const needsKey = method === "POST";
-        if (needsKey && (typeof key !== "string" || key.length === 0)) {
-          reject(400, error("MISSING_IDEMPOTENCY_KEY", "POST requests require an Idempotency-Key header"));
-          return;
-        }
         // Agent authentication, before idempotency: only the registration
         // route mints credentials, so it is the one mutating route that
         // stays keyless. A replay never skips this gate. link-email resolves
@@ -1509,28 +1515,38 @@ export function createApp(dbPath) {
             return;
           }
         }
-        // Idempotency is scoped per agent: the same key string from two
-        // agents names two independent slots, so Agent B can never replay
-        // Agent A's receipt. Keyless registration keeps the shared scope.
-        const idemKey = agent !== null ? `${agent.id}:${key}` : `public:${key}`;
-        // Keyless PATCH/DELETE skip replay AND caching below: without a
-        // client key every request would share one slot and a second
-        // PATCH would replay the first one's response.
-        const replay = needsKey ? idempotency.get(idemKey) : undefined;
-        if (replay !== undefined) {
-          send(replay.status, replay.payload, replay.headers);
-          return;
-        }
         let body;
+        let bodyText;
         try {
-          const text = await readBody(req, MAX_BODY_SIZE);
-          body = text.length === 0 ? {} : JSON.parse(text);
+          bodyText = await readBody(req, MAX_BODY_SIZE);
+          body = bodyText.length === 0 ? {} : JSON.parse(bodyText);
         } catch (err) {
           if (err?.code === "PAYLOAD_TOO_LARGE") {
             reject(413, error("PAYLOAD_TOO_LARGE", "request body exceeds 1MB"));
             return;
           }
           reject(400, error("INVALID_JSON", "request body must be valid JSON"));
+          return;
+        }
+        // The Idempotency-Key header is optional HTTP plumbing: when the
+        // agent omits it, the protocol auto-generates a deterministic key
+        // from agent + URL + body, so an identical retry within the short
+        // auto window replays instead of re-executing. Explicit keys keep
+        // the full TTL; auto keys expire after seconds so a deliberate
+        // second action later still runs as a new request.
+        const provided = req.headers["idempotency-key"];
+        const auto = typeof provided !== "string" || provided.length === 0;
+        // Idempotency is scoped per agent: the same key string from two
+        // agents names two independent slots, so Agent B can never replay
+        // Agent A's receipt. Keyless registration keeps the shared scope.
+        const scope = agent !== null ? agent.id : "public";
+        const idemKey = auto ? autoIdempotencyKey(scope, req.url, bodyText) : `${scope}:${provided}`;
+        // Keyless PATCH/DELETE skip replay AND caching below: without a
+        // client key every request would share one slot and a second
+        // PATCH would replay the first one's response.
+        const replay = needsKey ? idempotency.get(idemKey) : undefined;
+        if (replay !== undefined) {
+          send(replay.status, replay.payload, replay.headers);
           return;
         }
         // Awaited so async handlers (profile, link-email) work; sync
@@ -1540,8 +1556,9 @@ export function createApp(dbPath) {
         // Cache successes only: caching a rejection would freeze the first
         // error in place and punish clients that retry with a fixed request.
         // Headers ride along so a replayed pay still carries its receipt.
-        // `at` feeds the TTL reaper so entries die after 24 hours.
-        if (needsKey && payload.ok === true) idempotency.set(idemKey, { status, payload, headers, at: Date.now() });
+        // `at` feeds the TTL reaper: explicit entries die after 24 hours,
+        // auto entries after the short auto window.
+        if (needsKey && payload.ok === true) idempotency.set(idemKey, { status, payload, headers, at: Date.now(), auto });
         if (payload.ok === false) req.log.warn({ status, code: payload.error?.code }, "request.rejected");
         send(status, payload, headers);
         return;

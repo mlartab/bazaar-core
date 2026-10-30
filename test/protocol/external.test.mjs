@@ -103,6 +103,14 @@ test("protocol: /openapi.json is generated from SCHEMAS and every path exists", 
     },
     additionalProperties: false,
   });
+  // openDeal carries the buyer brief: optional metadata, max 10 keys,
+  // string values only.
+  assert.deepEqual(spec.components.schemas.openDeal.properties.metadata, {
+    type: "object",
+    maxProperties: 10,
+    "x-stringValues": true,
+  });
+  assert.deepEqual(spec.components.schemas.openDeal.required, ["buyer", "seller", "price"]);
   const [s, b] = await get("/openapi.json");
   assert.equal(s, 200);
   assert.deepEqual(b.result.paths["/api/agents"].post.requestBody.content["application/json"].schema, {
@@ -134,12 +142,17 @@ test("protocol: /llms.txt and /.well-known/agent.json describe the loop", async 
   const [s1, b1] = await get("/llms.txt");
   assert.equal(s1, 200);
   assert.match(b1.result.text, /Idempotency-Key/);
+  // The loop doc tells sellers where the buyer's brief lives.
+  assert.match(b1.result.text, /result\.deal\.metadata/);
   const [s2, b2] = await get("/.well-known/agent.json");
   assert.equal(s2, 200);
   assert.equal(b2.result.name, "Bazaar Protocol");
   assert.match(b2.result.baseUrl, /^http:\/\//);
   assert.equal(b2.result.auth.scheme, "x-agent-key");
   assert.ok(Array.isArray(b2.result.capabilities));
+  // Seller search is described so agents know how to narrow the directory.
+  assert.deepEqual(Object.keys(b2.result.directoryFilters).sort(), ["max_price", "service_type", "skills"]);
+  assert.deepEqual(b2.result.directoryFilters.service_type.enum, ["endpoint", "negotiation", "compute"]);
   process.env.PUBLIC_BASE_URL = "https://bazaar.example.com";
   const [, b3] = await get("/.well-known/agent.json");
   assert.equal(b3.result.baseUrl, "https://bazaar.example.com");

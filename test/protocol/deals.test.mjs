@@ -60,6 +60,23 @@ after(async () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("protocol: deal metadata round-trips from open to read-back", async () => {
+  // Fresh parties: the listing tests below assert exact scoped deal sets,
+  // so this round-trip must not add deals to list-buyer/list-seller.
+  const metaBuyer = (await post("/api/agents", { id: "meta-buyer", role: "buyer" }))[1].result.api_key;
+  await post("/api/agents", { id: "meta-seller", role: "seller" });
+  const [os, ob] = await post(
+    "/api/deals",
+    { id: "pg-meta", buyer: "meta-buyer", seller: "meta-seller", price: 60, metadata: { prompt: "hello" } },
+    metaBuyer,
+  );
+  assert.equal(os, 200);
+  assert.deepEqual(ob.result.deal.metadata, { prompt: "hello" });
+  const [gs, gb] = await get("/api/deals/pg-meta", metaBuyer);
+  assert.equal(gs, 200);
+  assert.deepEqual(gb.result.deal.metadata, { prompt: "hello" });
+});
+
 test("protocol: seller ACCEPT at the standing offer price reaches AGREED", async () => {
   // Regression for the simulation bug: OFFER 60 followed by ACCEPT 60 used
   // to die with DUPLICATE_OFFER. Accepting the standing price is the

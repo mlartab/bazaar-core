@@ -191,6 +191,14 @@ export function openStore(path) {
     } catch {
       // Column present: nothing to migrate.
     }
+    // Optional buyer brief for the Hire flow (openDeal metadata). Same
+    // guarded pattern: the throw means "already there". Old rows read NULL,
+    // which readers map to "no metadata" rather than an empty object.
+    try {
+      db.exec("ALTER TABLE deals ADD COLUMN metadata_json TEXT");
+    } catch {
+      // Column present: nothing to migrate.
+    }
     // Agent credentials. Pre-key rows (and any fresh row saved without one)
     // get a random key: authentication must never fail open on NULL.
     try {
@@ -448,7 +456,7 @@ export function openStore(path) {
       if (typeof deal.state !== "string" || deal.state.length === 0) {
         return fail("BAD_STATE", "deal must have a non-empty string state");
       }
-      run("INSERT INTO deals (id, state, buyer, seller, price, expires_at, close_reason, delivery_expires_at, sla_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+      run("INSERT INTO deals (id, state, buyer, seller, price, expires_at, close_reason, delivery_expires_at, sla_ms, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         deal.id,
         deal.state,
         deal.buyer ?? null,
@@ -458,6 +466,9 @@ export function openStore(path) {
         deal.close_reason ?? null,
         deal.delivery_expires_at ?? null,
         deal.sla_ms ?? null,
+        // HTTP JSON bodies are always acyclic, so stringify cannot throw
+        // here; direct store callers must pass JSON-compatible values too.
+        deal.metadata !== undefined ? JSON.stringify(deal.metadata) : null,
       ]);
       return { ok: true };
     },
@@ -465,14 +476,27 @@ export function openStore(path) {
     // close reason). getDeal's frozen shape is untouched.
     getDealRow(id) {
       if (!isValidId(id)) return null;
-      return get("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, sla_ms, updated_at FROM deals WHERE id = ?", [id]) ?? null;
+      const row = get("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, sla_ms, updated_at, metadata_json FROM deals WHERE id = ?", [id]);
+      if (row === undefined || row === null) return null;
+      const { metadata_json, ...full } = row;
+      const metadata = parseMetadata(metadata_json);
+      return metadata === null ? full : { ...full, metadata };
     },
     getDeal(id) {
-      // Column list frozen: existing readers assert this exact shape.
-      return get("SELECT id, state, buyer, seller, price FROM deals WHERE id = ?", [id]) ?? null;
+      // metadata rides alongside the frozen columns: rows saved without it
+      // read back without the key, so existing readers keep their shape.
+      if (!isValidId(id)) return null;
+      const row = get("SELECT id, state, buyer, seller, price, metadata_json FROM deals WHERE id = ?", [id]);
+      if (row === undefined || row === null) return null;
+      const { metadata_json, ...deal } = row;
+      const metadata = parseMetadata(metadata_json);
+      return metadata === null ? deal : { ...deal, metadata };
     },
     listDeals() {
-      return all("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at FROM deals ORDER BY rowid");
+      return all("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, metadata_json FROM deals ORDER BY rowid").map(({ metadata_json, ...row }) => {
+        const metadata = parseMetadata(metadata_json);
+        return metadata === null ? row : { ...row, metadata };
+      });
     },
     // Post-payment stalls: escrow captured but no delivery before the stamp.
     // created_at is unix seconds (not ms) and predates the stamp regime, so
@@ -500,9 +524,12 @@ export function openStore(path) {
       }
       params.push(limit, offset);
       return all(
-        `SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at FROM deals WHERE (buyer = ? OR seller = ?)${filter} ORDER BY rowid LIMIT ? OFFSET ?`,
+        `SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, metadata_json FROM deals WHERE (buyer = ? OR seller = ?)${filter} ORDER BY rowid LIMIT ? OFFSET ?`,
         params,
-      );
+      ).map(({ metadata_json, ...row }) => {
+        const metadata = parseMetadata(metadata_json);
+        return metadata === null ? row : { ...row, metadata };
+      });
     },
     countDealsByParty(agentId, status) {
       const params = [agentId, agentId];

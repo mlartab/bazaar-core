@@ -159,6 +159,23 @@ test("protocol: patchAgent accepts partial edits and rejects unknowns", () => {
   assert.equal(validate("patchAgent", { api_key: "x" }).code, "INVALID_SCHEMA");
 });
 
+test("protocol: openDeal accepts optional string-valued metadata", () => {
+  const base = { buyer: "b", seller: "s", price: 50 };
+  // Absent stays valid; a small flat string map validates.
+  assert.deepEqual(validate("openDeal", base), { ok: true });
+  assert.deepEqual(validate("openDeal", { ...base, metadata: { prompt: "paint a mural" } }), { ok: true });
+  // Non-objects, non-string values, and more than 10 keys fail.
+  const invalidMeta = (metadata) => validate("openDeal", { ...base, metadata });
+  assert.equal(invalidMeta("paint it").field, "metadata");
+  assert.equal(invalidMeta(["prompt"]).field, "metadata");
+  assert.equal(invalidMeta({ prompt: 42 }).field, "metadata");
+  assert.equal(invalidMeta({ prompt: null }).field, "metadata");
+  assert.equal(
+    invalidMeta(Object.fromEntries(Array(11).fill(0).map((_, i) => [`k${i}`, "v"]))).field,
+    "metadata",
+  );
+});
+
 test("protocol: schemas reject over-long identifiers", () => {
   const long = "x".repeat(129);
   assert.equal(invalid("openDeal", { id: long, buyer: "b", seller: "s", price: 1 }).field, "id");

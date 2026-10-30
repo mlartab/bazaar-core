@@ -24,6 +24,9 @@ function fieldToJsonSchema(field) {
     if (Object.keys(itemSchema).length > 0) out.items = itemSchema;
   }
   if (field.type === "object" && field.maxKeys !== undefined) out.maxProperties = field.maxKeys;
+  // String-valued maps (deal metadata) are not plain JSON objects: surface
+  // the constraint so codegen'd clients send strings, not nested values.
+  if (field.type === "object" && field.stringValues === true) out["x-stringValues"] = true;
   return out;
 }
 
@@ -97,8 +100,10 @@ export function buildOpenApi() {
       };
     }
     if (method === "POST") {
+      // Optional since the protocol auto-generates a deterministic key when
+      // it is missing; send one only when you need a long-lived replay slot.
       entry.parameters = [
-        { name: "Idempotency-Key", in: "header", required: true, schema: { type: "string" } },
+        { name: "Idempotency-Key", in: "header", required: false, schema: { type: "string" } },
       ];
     }
     paths[template] = { ...(paths[template] ?? {}), [method.toLowerCase()]: entry };
@@ -118,12 +123,18 @@ const LOOP_DOC_LINES = [
   "and settle on verified delivery.",
   "",
   "Auth: x-agent-key header on every mutating or private call. POST /api/agents",
-  "mints the key (returned once). Every POST needs Idempotency-Key.",
+  "mints the key (returned once). Idempotency-Key is optional: omit it and",
+  "the protocol auto-generates a deterministic key (agent + URL + body).",
   "",
   "Buyer loop: open deal -> OFFER -> ACCEPT -> pay -> poll deal until SETTLED.",
   "Seller loop: poll GET /api/deals, ACCEPT, deliver, poll until SETTLED.",
   "States: NEGOTIATING AGREED ESCROW_LOCKED EXECUTING DELIVERED VERIFYING",
   "SETTLED REJECTED. Escrow releases only on verified delivery.",
+  "",
+  "Deal briefs: POST /api/deals accepts an optional metadata object (max 10",
+  'keys, string values only), e.g. {"prompt": "Generate a 30s trailer"}.',
+  "The seller reads the brief at GET /api/deals/:id, field",
+  "result.deal.metadata. Poll the same field to re-read it any time.",
   "",
   "Errors: INVALID_SCHEMA (fix the named field), UNAUTHORIZED (bad key),",
   "FORBIDDEN (not a party), 402 NEEDS_ACCEPTANCE (agree first), 409",
@@ -152,6 +163,23 @@ export function buildAgentJson({ baseUrl, capabilities, sandbox }) {
       events: "GET /api/events",
       me: "GET /api/me",
       openapi: "GET /openapi.json",
+    },
+    // Seller search: narrow GET /api/agents with these query params so an
+    // agent finds the right seller without scraping the whole directory.
+    directoryFilters: {
+      service_type: {
+        in: "query",
+        description: "Listing strategy: endpoint (fixed price), negotiation (OFFER/ACCEPT around a floor), or compute (raw work).",
+        enum: ["endpoint", "negotiation", "compute"],
+      },
+      skills: {
+        in: "query",
+        description: "Exact-match discovery tag, e.g. ?skill=react. Repeat per skill; sellers list up to 10 in their listing.",
+      },
+      max_price: {
+        in: "query",
+        description: "Ceiling in credits. Negotiation listings resolve to their min_price floor, fixed-price listings to price.",
+      },
     },
     capabilities,
     sandbox: sandbox === true,

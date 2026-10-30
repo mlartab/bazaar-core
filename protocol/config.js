@@ -15,6 +15,11 @@ export const INSPECTION_SWEEP_INTERVAL_MS = 30000;
 export const MAX_BODY_SIZE = 1024 * 1024;
 export const EVENT_CAP = 500;
 export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+// Auto-generated idempotency keys (requests that omit Idempotency-Key):
+// a short window so an agent retrying a failed request within 10 seconds
+// gets the cached result, while a deliberate second action later still
+// runs as a new request.
+export const AUTO_IDEMPOTENCY_TTL_MS = 10 * 1000;
 export const IDEMPOTENCY_SWEEP_MS = 10 * 60 * 1000;
 // Demo-safe mode: when process.env.DEMO_SAFE is "true" (read lazily at
 // boot, never at import, so tests can flip it), no sweeper timer is armed

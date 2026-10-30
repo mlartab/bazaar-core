@@ -100,6 +100,10 @@ export const SCHEMAS = {
       buyer: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       seller: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       price: { type: "integer", required: true, min: 1 },
+      // Optional buyer brief for the Hire flow (e.g. { prompt: "..." }).
+      // At most 10 keys, every value a string, so the column stays a
+      // small flat JSON object and never a nested document store.
+      metadata: { type: "object", maxKeys: 10, stringValues: true },
     },
   },
   move: {
@@ -233,6 +237,13 @@ export function validate(endpoint, request) {
     }
     if (rule.type === "object" && rule.maxKeys !== undefined && Object.keys(value).length > rule.maxKeys) {
       return fail(name, `field ${name} must have at most ${rule.maxKeys} keys`);
+    }
+    if (rule.type === "object" && rule.stringValues === true) {
+      for (const [k, v] of Object.entries(value)) {
+        if (typeof v !== "string") {
+          return fail(name, `field ${name}[${k}] must be a string`);
+        }
+      }
     }
   }
   return { ok: true };

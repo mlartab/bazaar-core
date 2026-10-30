@@ -34,10 +34,12 @@ async function post(p, body, k = freshKey(), agentKey = buyerKey) {
   return [res.status, await res.json()];
 }
 
-async function postNoKey(p, body) {
+async function postNoKey(p, body, agentKey = buyerKey) {
+  const headers = { "content-type": "application/json" };
+  if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
   const res = await fetch(url + p, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   return [res.status, await res.json()];
@@ -132,10 +134,29 @@ test("protocol: server lists agents with capabilities", async () => {
   }
 });
 
-test("protocol: server rejects a POST without an idempotency key", async () => {
-  const [status, body] = await postNoKey("/api/agents", { id: "ghost", role: "buyer" });
-  assert.equal(status, 400);
-  assertErr(body, "MISSING_IDEMPOTENCY_KEY");
+test("protocol: server accepts a POST without an idempotency key", async () => {
+  // The header is optional HTTP plumbing: the protocol auto-generates a
+  // deterministic key, so the request succeeds without one.
+  const [status, body] = await postNoKey("/api/agents", { id: "ghost", role: "buyer" }, undefined);
+  assert.equal(status, 200);
+  assertOk(body);
+});
+
+test("protocol: server replays a rapid identical keyless retry", async () => {
+  const deal = { id: "d-autoidem", buyer: "buyer", seller: "seller", price: 50, metadata: { prompt: "paint a mural" } };
+  const [status, body] = await postNoKey("/api/deals", deal);
+  assert.equal(status, 200);
+  assertOk(body);
+  assert.equal(body.result.deal.id, "d-autoidem");
+  // Rapid identical retry (no header): replays the cached result instead
+  // of failing as DUPLICATE_DEAL.
+  const [status2, body2] = await postNoKey("/api/deals", { ...deal });
+  assert.equal(status2, 200);
+  assert.deepEqual(body2, body);
+  // The brief round-trips on the stored deal.
+  const [gs, gb] = await get("/api/deals/d-autoidem");
+  assert.equal(gs, 200);
+  assert.deepEqual(gb.result.deal.metadata, { prompt: "paint a mural" });
 });
 
 test("protocol: server rejects a bad schema", async () => {
