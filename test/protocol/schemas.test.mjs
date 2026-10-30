@@ -50,7 +50,7 @@ test("protocol: schemas reject out-of-set values", () => {
   assert.equal(invalid("move", { dealId: "d1", key: "k1", kind: "offer", price: 50 }).field, "kind");
   // The verdict is server-side: any client-supplied status is unknown.
   assert.equal(invalid("delivery", { id: "x1", dealId: "d1", deliveryUrl: "u1", status: "DELIVERED" }).field, "status");
-  assert.deepEqual(Object.keys(SCHEMAS).sort(), ["delivery", "linkEmail", "moderationNote", "move", "openDeal", "patchAgent", "pay", "registerAgent", "reviewNote"]);
+  assert.deepEqual(Object.keys(SCHEMAS).sort(), ["delivery", "graduateAgent", "linkEmail", "moderationNote", "move", "openDeal", "patchAgent", "pay", "registerAgent", "reviewNote", "rotateKey"]);
   assert.deepEqual(validate("reviewNote", {}), { ok: true });
   assert.deepEqual(validate("reviewNote", { message: "ok" }), { ok: true });
   assert.deepEqual(validate("moderationNote", { reason: "spam" }), { ok: true });

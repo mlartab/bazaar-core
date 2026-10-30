@@ -21,7 +21,8 @@ import helmet from "helmet";
 import { logger } from "./logger.js";
 import { openStore } from "./db.js";
 import { createSessionManager } from "./session-manager.js";
-import { EVENT_CAP, IDEMPOTENCY_SWEEP_MS, IDEMPOTENCY_TTL_MS, MAX_BODY_SIZE, isDemoSafe } from "./config.js";
+import { EVENT_CAP, IDEMPOTENCY_SWEEP_MS, IDEMPOTENCY_TTL_MS, MAX_BODY_SIZE, isDemoSafe, isAutoApprove, probationPriceCap, probationMaxDeals, registrationPerIpPerHour, negotiationWindowMs, inspectionTimeoutMs, deliverySlaBounds } from "./config.js";
+import { buildOpenApi, buildLlmsTxt, buildAgentJson } from "./openapi.js";
 
 // Pure reaper for the idempotency map: entries older than ttlMs are dropped.
 // Exported so tests can prove the 24h policy without waiting a day.
@@ -149,6 +150,42 @@ function readBody(req, limit) {
   });
 }
 
+// Verdict surface: a derived, ISO-8601 summary of where a deal stands and
+// why. Pure function so the mapping is unit-testable; the handler only
+// attaches it. Additive — the frozen deal row shape never changes.
+export function buildVerdict(deal, row) {
+  const toIso = (ms) => (typeof ms === "number" ? new Date(ms).toISOString() : null);
+  const toIsoSeconds = (s) => (typeof s === "number" ? new Date(s * 1000).toISOString() : null);
+  let status = "PENDING";
+  let verdict_reason = "Deal in progress.";
+  if (deal.state === "SETTLED") {
+    status = "SETTLED";
+    verdict_reason = "Escrow released to the seller on verified delivery.";
+  } else if (deal.state === "REJECTED") {
+    if (typeof row?.close_reason === "string" && row.close_reason.includes("TIMEOUT")) {
+      status = "EXPIRED";
+      verdict_reason = `Expired (${row.close_reason}) — buyer refunded.`;
+    } else {
+      status = "REJECTED";
+      verdict_reason = "Delivery rejected — buyer refunded.";
+    }
+  } else if (deal.state === "VERIFYING") {
+    status = "FROZEN";
+    verdict_reason = "Awaiting inspector verdict — escrow locked.";
+  }
+  return {
+    status,
+    close_reason: row?.close_reason ?? null,
+    verdict_reason,
+    timestamps: {
+      created: toIsoSeconds(row?.created_at),
+      updated: toIso(row?.updated_at),
+      expires: toIso(row?.expires_at),
+      delivery_expires: toIso(row?.delivery_expires_at),
+    },
+  };
+}
+
 export function createApp(dbPath) {
   const store = openStore(dbPath);
   if (store.ok === false) throw new Error(store.message);
@@ -174,7 +211,36 @@ export function createApp(dbPath) {
   // DEMO_SAFE=true freezes background expiry for the whole process.
   // Read here at boot (not at import) so tests can flip the env per case.
   const demoSafe = isDemoSafe();
-  const sessions = createSessionManager({ store, ledger, demoSafe });
+  const sessions = createSessionManager({
+    store,
+    ledger,
+    demoSafe,
+    expiresInMs: negotiationWindowMs(),
+    inspectionExpiresInMs: inspectionTimeoutMs(),
+  });
+  // Opt-in permissionless onboarding: read at boot like demoSafe.
+  const autoApprove = isAutoApprove();
+  // Registration anti-spam: in-memory per-IP hourly window, only enforced
+  // when AUTO_APPROVE is on (the manual queue is its own throttle).
+  const regAttempts = new Map();
+  const clientIp = (req) => {
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string" && forwarded.length > 0) {
+      return forwarded.split(",")[0].trim() || "unknown";
+    }
+    return req.socket?.remoteAddress ?? "unknown";
+  };
+  const checkRegistrationCap = (req) => {
+    const cap = registrationPerIpPerHour();
+    const now = Date.now();
+    const windowStart = now - 60 * 60 * 1000;
+    const ip = clientIp(req);
+    const recent = (regAttempts.get(ip) ?? []).filter((at) => at > windowStart);
+    if (recent.length >= cap) return false;
+    recent.push(now);
+    regAttempts.set(ip, recent);
+    return true;
+  };
   const events = [];
   const idempotency = new Map();
   // Entries carry their write time; anything older than the TTL is reaped
@@ -209,6 +275,51 @@ export function createApp(dbPath) {
   // connection. Fan-out is best-effort — a dead client is pruned, never
   // allowed to break emit() for the pipeline.
   const sseClients = new Set();
+  // Per-agent streams: agentId -> Set of { res }. Same best-effort rule;
+  // each entry only ever receives its own agent's deal events.
+  const agentStreams = new Map();
+  const MAX_AGENT_STREAMS = 2;
+  const streamMatches = (agentId, event) => {
+    if (event.dealId === undefined || event.dealId === null) return true;
+    const deal = store.getDeal(event.dealId);
+    return deal !== null && (deal.buyer === agentId || deal.seller === agentId);
+  };
+  const closeAgentStreams = (agentId) => {
+    const set = agentStreams.get(agentId);
+    if (set === undefined) return;
+    for (const entry of set) {
+      try {
+        entry.res.end();
+      } catch {
+        // Already gone: dropping the handle is the whole job.
+      }
+    }
+    agentStreams.delete(agentId);
+  };
+  // Shutdown helper: end EVERY SSE response (agent feeds and the admin
+  // feed). server.close() only stops new connections and waits for open
+  // ones; an SSE socket never ends on its own, so without this a redeploy
+  // (SIGTERM -> close()) hangs until the platform SIGKILLs it.
+  const closeAllStreams = () => {
+    for (const set of agentStreams.values()) {
+      for (const entry of set) {
+        try {
+          entry.res.end();
+        } catch {
+          // Best effort: already-gone sockets are fine.
+        }
+      }
+    }
+    agentStreams.clear();
+    for (const res of sseClients) {
+      try {
+        res.end();
+      } catch {
+        // Best effort: already-gone sockets are fine.
+      }
+    }
+    sseClients.clear();
+  };
   const emit = (event) => {
     seq += 1;
     const full = { seq, at: Date.now(), ...event };
@@ -223,6 +334,17 @@ export function createApp(dbPath) {
       } catch {
         sseClients.delete(client);
       }
+    }
+    for (const [agentId, set] of agentStreams) {
+      if (!streamMatches(agentId, full)) continue;
+      for (const entry of set) {
+        try {
+          entry.res.write(`id: ${full.seq}\n${line}`);
+        } catch {
+          set.delete(entry);
+        }
+      }
+      if (set.size === 0) agentStreams.delete(agentId);
     }
   };
 
@@ -376,22 +498,88 @@ export function createApp(dbPath) {
       return [200, { ok: true, state: null, allowedMoves: [], result: { agent_id: id, linked: true } }];
     },
 
-    "POST /api/agents": (body) => {
+    // Credential rotation: the caller's key must belong to the URL id (the
+    // dispatcher resolves the agent for this route, like deals). One atomic
+    // UPDATE swaps the key; the old one stops resolving immediately. The new
+    // key is shown once, and idempotent replay returns the same key.
+    "POST /api/agents/:id/rotate-key": (body, id, agent) => {
+      const checked = validateSchema("rotateKey", body);
+      if (!checked.ok) return [400, toContractError(checked)];
+      if (agent === null || agent.id !== id) {
+        return [403, error("FORBIDDEN", `only agent ${id} can rotate its own key`)];
+      }
+      const rotated = store.rotateAgentKey(id);
+      if (!rotated.ok) {
+        const status = rotated.code === "NO_SUCH_AGENT" ? 404 : 400;
+        return [status, toContractError(rotated)];
+      }
+      // A rotated credential must not keep old streams alive.
+      closeAgentStreams(id);
+      return [200, { ok: true, state: null, allowedMoves: [], result: { agent_id: id, api_key: rotated.api_key } }];
+    },
+
+    // Owner-only self profile: id, role, lifecycle, probation, balance,
+    // and open-deal counts. Never another agent's row.
+    "GET /api/me": (_body, _id, agent) => {
+      if (agent === null) {
+        return [401, error("UNAUTHORIZED", "reading your own profile requires a valid x-agent-key header")];
+      }
+      const status = store.getAgentStatus(agent.id);
+      return [
+        200,
+        {
+          ok: true,
+          state: null,
+          allowedMoves: [],
+          result: {
+            id: agent.id,
+            role: agent.role,
+            status: status?.status ?? null,
+            status_reason: status?.status_reason ?? null,
+            probation: store.getAgentProbation(agent.id) ?? 0,
+            balance: store.getAgent(agent.id)?.balance ?? null,
+            deals: {
+              open: store.countOpenDealsByParty(agent.id),
+              total: store.countDealsByParty(agent.id),
+            },
+          },
+        },
+      ];
+    },
+
+    // Legacy alias: early clients sent speech_transcription; the canonical
+    // category is speech. Normalized on write; reads always see canonical.
+    "POST /api/agents": (body, _id, _agent, req) => {
       const checked = validateSchema("registerAgent", body);
       if (!checked.ok) return [400, toContractError(checked)];
       if (store.getAgent(body.id) !== null) {
         return [409, error("DUPLICATE_AGENT", `agent ${body.id} is already registered`)];
       }
+      // Open registration is spam-gated only in auto-approve mode; the
+      // manual review queue is its own throttle.
+      if (autoApprove && !checkRegistrationCap(req)) {
+        return [429, error("RATE_LIMITED", "too many registrations from this address; try again later")];
+      }
+      const category = body.category === "speech_transcription" ? "speech" : body.category;
+      // Deployment-tightened SLA bounds ride beside the wide static
+      // schema range; out-of-env values are a schema-shaped 400.
+      const sla = deliverySlaBounds();
+      const slaSeconds = body.delivery_sla_seconds ?? sla.def;
+      if (slaSeconds < sla.min || slaSeconds > sla.max) {
+        return [400, error("INVALID_SCHEMA", `field delivery_sla_seconds must be between ${sla.min} and ${sla.max} seconds`)];
+      }
       // getAgent's column list is frozen for existing readers, so the
       // agent shape stays { id, role, balance }; the credential rides
       // beside it, shown once like a Stripe secret key.
       const apiKey = randomUUID();
-      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, category: body.category, api_key: apiKey });
+      const probation = autoApprove ? 1 : 0;
+      const status = autoApprove ? "ACTIVE" : "PENDING";
+      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, category, api_key: apiKey, status, probation, delivery_sla_seconds: slaSeconds });
       ensureAccount(body.id);
       emit({ type: "AGENT_REGISTERED", agentId: body.id, role: body.role });
       // Outbound replica only: after the SQLite commit, never awaited, so
       // a Supabase outage stales discovery without failing registration.
-      syncAgentRegistration({ id: body.id, role: body.role, balance: 0, capability: body.capability, status: "PENDING", title: body.title, description: body.description, price: body.price, category: body.category }).catch(() => {});
+      syncAgentRegistration({ id: body.id, role: body.role, balance: 0, capability: body.capability, status, title: body.title, description: body.description, price: body.price, category }).catch(() => {});
       // The queue message rides beside the frozen agent shape, so existing
       // readers keep passing while new agents learn they are not listed yet.
       return [
@@ -402,13 +590,19 @@ export function createApp(dbPath) {
           allowedMoves: [],
           result: {
             agent: store.getAgent(body.id),
-            message: "Agent registered successfully. Your listing is currently in the review queue.",
+            message: autoApprove
+              ? "Agent registered successfully and listed with probation caps."
+              : "Agent registered successfully. Your listing is currently in the review queue.",
             api_key: apiKey,
+            probation,
           },
         },
       ];
     },
 
+    // Probation caps: a probation agent — buyer or seller — may only deal
+    // within the price cap and the concurrent-deal cap. Graduated and
+    // legacy agents skip both checks.
     "POST /api/deals": (body, _id, agent) => {
       const checked = validateSchema("openDeal", body);
       if (!checked.ok) return [400, toContractError(checked)];
@@ -416,18 +610,35 @@ export function createApp(dbPath) {
       if (agent.id !== body.buyer && agent.id !== body.seller) {
         return [403, error("FORBIDDEN", `agent ${agent.id} is not a party of this deal`)];
       }
-      if (store.getDeal(body.id) !== null) {
-        return [409, error("DUPLICATE_DEAL", `deal ${body.id} already exists`)];
+      // Option C ids: omitted ids are server-issued (`deal-<8hex>`);
+      // explicit client ids keep working unchanged. Idempotency still
+      // dedupes the retry, returning the same issued id.
+      const dealId = body.id ?? `deal-${randomUUID().slice(0, 8)}`;
+      if (store.getDeal(dealId) !== null) {
+        return [409, error("DUPLICATE_DEAL", `deal ${dealId} already exists`)];
+      }
+      for (const party of [body.buyer, body.seller]) {
+        if (store.getAgentProbation(party) === 1) {
+          if (body.price > probationPriceCap()) {
+            return [403, error("PROBATION_LIMIT", `probation agents may not open deals above ${probationPriceCap()} CR`)];
+          }
+          if (store.countOpenDealsByParty(party) >= probationMaxDeals()) {
+            return [403, error("PROBATION_LIMIT", `probation agents may hold at most ${probationMaxDeals()} open deals`)];
+          }
+        }
       }
       ensureAccount(body.buyer);
       ensureAccount(body.seller);
       const funded = deposit(ledger, body.buyer, body.price);
       if (!funded.ok) return [400, toContractError(funded)];
-      // The 60s negotiation window starts the moment the deal opens; the
+      // The negotiation window starts the moment the deal opens; the
       // sweeper reads this stamp, and NULL (pre-timeout rows) never expires.
-      store.saveDeal({ id: body.id, state: "NEGOTIATING", buyer: body.buyer, seller: body.seller, price: body.price, expires_at: sessions.expiresAt() });
-      emit({ type: "DEAL_OPENED", dealId: body.id, state: "NEGOTIATING" });
-      const deal = store.getDeal(body.id);
+      // sla_ms snapshots the seller's listing SLA so later listing edits
+      // never change a running deal's delivery deadline.
+      const slaSeconds = store.getAgentSla(body.seller) ?? deliverySlaBounds().def;
+      store.saveDeal({ id: dealId, state: "NEGOTIATING", buyer: body.buyer, seller: body.seller, price: body.price, expires_at: sessions.expiresAt(), sla_ms: slaSeconds * 1000 });
+      emit({ type: "DEAL_OPENED", dealId, state: "NEGOTIATING" });
+      const deal = store.getDeal(dealId);
       return [200, { ok: true, state: deal.state, allowedMoves: movesFor(deal.state), result: { deal } }];
     },
 
@@ -516,9 +727,11 @@ export function createApp(dbPath) {
       // at a discounted price or pay just locked the full deal price. Both
       // paths above guarantee a lock exists here (failures return early).
       emit({ type: "ESCROW_LOCKED", dealId: id, amount: ledger.locks[id].amount });
-      // Capture starts the delivery clock: a seller who never delivers
-      // after this stamp loses the lock to the delivery sweeper.
-      store.setDealDeliveryExpiry(id, sessions.deliveryExpiresAt());
+      // Capture starts the delivery clock from the deal's own SLA
+      // snapshot: a seller who never delivers after this stamp loses the
+      // lock to the delivery sweeper. Pre-snapshot rows fall back to the
+      // env default, matching open-time behavior for new listings.
+      store.setDealDeliveryExpiry(id, Date.now() + (store.getDealRow(id)?.sla_ms ?? deliverySlaBounds().def * 1000));
       // A real-looking receipt: the client proves capture with this string,
       // the server proves it with the matching ledger lock.
       const receipt = `x402-receipt-${randomUUID()}`;
@@ -628,19 +841,45 @@ export function createApp(dbPath) {
           ok: true,
           state: deal.state,
           allowedMoves: movesFor(deal.state),
-          result: { deal, moves: store.listMoves(id) },
+          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, store.getDealRow(id)) },
         },
       ];
     },
 
-    "GET /api/events": () => {
-      return [200, { ok: true, state: null, allowedMoves: [], result: { events } }];
+    "GET /api/events": (_body, _id, agent) => {
+      // Party scoping: an admin sees everything; a keyed agent sees
+      // registry/system events (no dealId) plus only its own deals. This
+      // keeps the global feed useful without leaking other agents' escrows.
+      const visible = agent !== null && agent.id !== "admin"
+        ? (() => {
+          const dealCache = new Map();
+          const isParty = (dealId) => {
+            if (!dealCache.has(dealId)) {
+              const deal = store.getDeal(dealId);
+              dealCache.set(dealId, deal !== null && (deal.buyer === agent.id || deal.seller === agent.id));
+            }
+            return dealCache.get(dealId);
+          };
+          return events.filter((e) => e.dealId === undefined || e.dealId === null || isParty(e.dealId));
+        })()
+        : events;
+      return [200, { ok: true, state: null, allowedMoves: [], result: { events: visible } }];
     },
 
     // Unauthenticated by design: load balancers and deploy gates need a
     // keyless liveness signal, and it reveals nothing.
     "GET /health": () => {
       return [200, { ok: true, state: null, allowedMoves: [], result: { status: "UP" } }];
+    },
+
+    // Machine-readable contract, generated from SCHEMAS at request time.
+    "GET /openapi.json": () => {
+      return [200, { ok: true, state: null, allowedMoves: [], result: buildOpenApi() }];
+    },
+
+    // Plain-language loop summary for agents and indexers.
+    "GET /llms.txt": () => {
+      return [200, { ok: true, state: null, allowedMoves: [], result: { text: buildLlmsTxt() } }];
     },
 
     "GET /api/admin/stats": () => {
@@ -735,11 +974,34 @@ export function createApp(dbPath) {
       return decideAgent(id, "RETIRED", body.reason);
     },
 
+    // Graduation: clears probation without touching lifecycle status.
+    // Audit-logged like every moderation decision.
+    "POST /api/admin/agents/:id/graduate": (body, id) => {
+      const checked = validateSchema("graduateAgent", body);
+      if (!checked.ok) return [400, toContractError(checked)];
+      const cleared = store.setAgentProbation(id, 0);
+      if (!cleared.ok) {
+        const status = cleared.code === "NO_SUCH_AGENT" ? 404 : 400;
+        return [status, toContractError(cleared)];
+      }
+      recordAudit({ action: "GRADUATE", agentId: id, from: null, to: null, reason: null });
+      return [200, { ok: true, state: null, allowedMoves: [], result: { agent_id: id, probation: 0 } }];
+    },
+
+    // Operator detail: full row plus probation marker. The list shapes
+    // stay frozen; this route is additive.
+    "GET /api/admin/agents/:id": (_body, id) => {
+      const row = store.getAgentDetail(id);
+      if (row === null) return [404, error("NO_SUCH_AGENT", `no agent with id ${id}`)];
+      return [200, { ok: true, state: null, allowedMoves: [], result: { agent: row } }];
+    },
+
     // Operator edit: allowlisted partial update of listing fields. Unknown
     // fields are rejected by schema; empty patches by the store.
     "PATCH /api/admin/agents/:id": (body, id) => {
       const checked = validateSchema("patchAgent", body);
       if (!checked.ok) return [400, toContractError(checked)];
+      if (body.category === "speech_transcription") body.category = "speech";
       const saved = store.updateAgent(id, body);
       if (!saved.ok) {
         const status = saved.code === "NO_SUCH_AGENT" ? 404 : 400;
@@ -758,6 +1020,7 @@ export function createApp(dbPath) {
         const status = removed.code === "NO_SUCH_AGENT" ? 404 : 409;
         return [status, toContractError(removed)];
       }
+      closeAgentStreams(id);
       recordAudit({ action: "DELETE", agentId: id, from: null, to: null, reason: null });
       return [200, { ok: true, state: null, allowedMoves: [], result: { id, deleted: true } }];
     },
@@ -769,6 +1032,10 @@ export function createApp(dbPath) {
       const status = saved.code === "NO_SUCH_AGENT" ? 404 : 409;
       return [status, toContractError(saved)];
     }
+    // Suspended or retired agents lose live streams: a lifecycle change
+    // must not leave an open feed behind. Suspension is otherwise
+    // visibility-only — deals, escrow, and balances keep working.
+    if (to === "SUSPENDED" || to === "RETIRED") closeAgentStreams(id);
     recordAudit({ action: to, agentId: id, from: saved.from, to: saved.to, reason: note ?? null });
     // Replica follows the commit: status transitions propagate for
     // discovery filtering, failures isolated from moderation. Capability
@@ -825,7 +1092,7 @@ export function createApp(dbPath) {
     if (
       method === "POST" ||
       method === "GET" ||
-      ((method === "PATCH" || method === "DELETE") && /^\/api\/admin\/agents\/[^/]+$/.test(pathname))
+      ((method === "PATCH" || method === "DELETE" || method === "GET") && /^\/api\/admin\/agents\/[^/]+$/.test(pathname))
     ) {
       const moves = pathname.match(/^\/api\/deals\/([^/]+)\/moves$/);
       if (moves !== null && method === "POST") {
@@ -855,12 +1122,16 @@ export function createApp(dbPath) {
       if (linkEmail !== null && method === "POST" && decodeURIComponent(linkEmail[1]) !== "") {
         return [handlers["POST /api/agents/:id/link-email"], decodeURIComponent(linkEmail[1])];
       }
-      const moderation = pathname.match(/^\/api\/admin\/agents\/([^/]+)\/(approve|reject|suspend|retire)$/);
+      const rotateKey = pathname.match(/^\/api\/agents\/([^/]+)\/rotate-key$/);
+      if (rotateKey !== null && method === "POST" && decodeURIComponent(rotateKey[1]) !== "") {
+        return [handlers["POST /api/agents/:id/rotate-key"], decodeURIComponent(rotateKey[1])];
+      }
+      const moderation = pathname.match(/^\/api\/admin\/agents\/([^/]+)\/(approve|reject|suspend|retire|graduate)$/);
       if (moderation !== null && method === "POST" && decodeURIComponent(moderation[1]) !== "") {
         return [handlers[`POST /api/admin/agents/:id/${moderation[2]}`], decodeURIComponent(moderation[1])];
       }
       const agentEdit = pathname.match(/^\/api\/admin\/agents\/([^/]+)$/);
-      if (agentEdit !== null && (method === "PATCH" || method === "DELETE") && decodeURIComponent(agentEdit[1]) !== "") {
+      if (agentEdit !== null && (method === "PATCH" || method === "DELETE" || method === "GET") && decodeURIComponent(agentEdit[1]) !== "") {
         return [handlers[`${method} /api/admin/agents/:id`], decodeURIComponent(agentEdit[1])];
       }
     }
@@ -1025,6 +1296,95 @@ export function createApp(dbPath) {
           reject(401, error("UNAUTHORIZED", "reading deals and events requires a valid x-agent-key header"));
           return;
         }
+        const [evStatus, evPayload] = handlers["GET /api/events"](undefined, undefined, viewer);
+        if (evPayload.ok === false) req.log.warn({ status: evStatus, code: evPayload.error?.code }, "request.rejected");
+        send(evStatus, evPayload);
+        return;
+      }
+      // Per-agent event stream: header-authenticated (EventSource cannot
+      // set headers, so agents use fetch streaming). Only the agent's own
+      // deal events plus registry/system events flow; Last-Event-ID (or
+      // ?since=) replays missed frames from the bounded ring.
+      if (method === "GET") {
+        const agentStream = pathname.match(/^\/api\/agents\/([^/]+)\/events\/stream$/);
+        if (agentStream !== null && decodeURIComponent(agentStream[1]) !== "") {
+          const streamId = decodeURIComponent(agentStream[1]);
+          const viewer = store.getAgentByKey(req.headers["x-agent-key"]);
+          if (viewer === null) {
+            reject(401, error("UNAUTHORIZED", "agent event streams require a valid x-agent-key header"));
+            return;
+          }
+          if (viewer.id !== streamId) {
+            reject(403, error("FORBIDDEN", `agent ${viewer.id} cannot read ${streamId}'s event stream`));
+            return;
+          }
+          const live = agentStreams.get(streamId) ?? new Set();
+          if (live.size >= MAX_AGENT_STREAMS) {
+            reject(429, error("TOO_MANY_STREAMS", `agent ${streamId} already holds ${MAX_AGENT_STREAMS} streams`));
+            return;
+          }
+          res.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+            // Proxies (nginx, Railway) must not buffer: each frame flushes.
+            "X-Accel-Buffering": "no",
+          });
+          res.write(": connected\n\n");
+          const parsed = new URL(req.url ?? "/", "http://localhost");
+          const sinceRaw = req.headers["last-event-id"] ?? parsed.searchParams.get("since");
+          const since = Number(sinceRaw);
+          for (const e of events) {
+            if (Number.isInteger(since) && e.seq <= since) continue;
+            const deal = e.dealId === undefined || e.dealId === null ? null : store.getDeal(e.dealId);
+            if (deal !== null && deal.buyer !== streamId && deal.seller !== streamId) continue;
+            res.write(`id: ${e.seq}\ndata: ${JSON.stringify(e)}\n\n`);
+          }
+          const entry = { res };
+          if (!agentStreams.has(streamId)) agentStreams.set(streamId, new Set());
+          agentStreams.get(streamId).add(entry);
+          const beat = setInterval(() => {
+            try {
+              res.write(": heartbeat\n\n");
+            } catch {
+              clearInterval(beat);
+            }
+          }, 15000);
+          if (typeof beat.unref === "function") beat.unref();
+          req.on("close", () => {
+            clearInterval(beat);
+            agentStreams.get(streamId)?.delete(entry);
+            if (agentStreams.get(streamId)?.size === 0) agentStreams.delete(streamId);
+          });
+          return;
+        }
+      }
+      // Owner-only self profile: the key resolves the caller, never a
+      // URL id, so no agent can read another's row.
+      if (method === "GET" && pathname === "/api/me") {
+        const viewer = store.getAgentByKey(req.headers["x-agent-key"]);
+        if (viewer === null) {
+          reject(401, error("UNAUTHORIZED", "reading your own profile requires a valid x-agent-key header"));
+          return;
+        }
+        const [meStatus, mePayload] = handlers["GET /api/me"](undefined, undefined, viewer);
+        if (mePayload.ok === false) req.log.warn({ status: meStatus, code: mePayload.error?.code }, "request.rejected");
+        send(meStatus, mePayload);
+        return;
+      }
+      // Discovery document: base URL from PUBLIC_BASE_URL, falling back to
+      // the request Host when unset (proxies should set the env var).
+      if (method === "GET" && pathname === "/.well-known/agent.json") {
+        const baseUrl = typeof process.env.PUBLIC_BASE_URL === "string" && process.env.PUBLIC_BASE_URL.length > 0
+          ? process.env.PUBLIC_BASE_URL
+          : `http://${req.headers.host ?? "localhost"}`;
+        send(200, {
+          ok: true,
+          state: null,
+          allowedMoves: [],
+          result: buildAgentJson({ baseUrl, capabilities: ["image_gen", "video_gen", "data", "text_gen", "speech"], sandbox: isDemoSafe() }),
+        });
+        return;
       }
       const [handler, id] = match(method, pathname);
       if (handler === undefined) {
@@ -1058,7 +1418,7 @@ export function createApp(dbPath) {
         // stays keyless. A replay never skips this gate. link-email resolves
         // the caller too — the handler then binds key to URL id.
         let agent = null;
-        if (pathname.startsWith("/api/deals") || /^\/api\/agents\/[^/]+\/link-email$/.test(pathname)) {
+        if (pathname.startsWith("/api/deals") || /^\/api\/agents\/[^/]+\/(link-email|rotate-key)$/.test(pathname)) {
           agent = store.getAgentByKey(req.headers["x-agent-key"]);
           if (agent === null) {
             reject(401, error("UNAUTHORIZED", "mutating protocol routes require a valid x-agent-key header"));
@@ -1090,8 +1450,9 @@ export function createApp(dbPath) {
           return;
         }
         // Awaited so async handlers (profile, link-email) work; sync
-        // handlers return plain tuples, which await passes through.
-        const [status, payload, headers] = await handler(body, id, agent);
+        // handlers return plain tuples, which await passes through. req
+        // rides fourth so registration can rate-limit by client IP.
+        const [status, payload, headers] = await handler(body, id, agent, req);
         // Cache successes only: caching a rejection would freeze the first
         // error in place and punish clients that retry with a fixed request.
         // Headers ride along so a replayed pay still carries its receipt.
@@ -1112,11 +1473,11 @@ export function createApp(dbPath) {
     }
   });
 
-  return { server, store, ledger, sessions, stopIdemSweep: () => clearInterval(idemSweep) };
+  return { server, store, ledger, sessions, stopIdemSweep: () => clearInterval(idemSweep), closeAllStreams };
 }
 
 export function startServer({ dbPath, port = 0 } = {}) {
-  const { server, store, sessions, stopIdemSweep } = createApp(dbPath);
+  const { server, store, sessions, stopIdemSweep, closeAllStreams } = createApp(dbPath);
   return new Promise((resolve, reject) => {
     server.on("error", reject);
     server.listen(port, "0.0.0.0", () => {
@@ -1127,6 +1488,14 @@ export function startServer({ dbPath, port = 0 } = {}) {
         port: actual,
         close: () =>
           new Promise((done) => {
+            // End SSE feeds first: server.close() waits for open
+            // connections, and an SSE socket never ends on its own.
+            try {
+              closeAllStreams();
+            } catch {
+              // Best effort: shutdown must proceed regardless.
+            }
+            if (typeof server.closeAllConnections === "function") server.closeAllConnections();
             server.close(() => {
               sessions.stop();
               stopIdemSweep();

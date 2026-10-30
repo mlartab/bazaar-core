@@ -126,7 +126,7 @@ test("protocol: server lists agents with capabilities", async () => {
   const byId = Object.fromEntries(body.result.agents.map((a) => [a.id, a]));
   assert.equal(byId["seller2"].capability, "GPU rendering");
   for (const agent of body.result.agents) {
-    for (const field of ["id", "role", "balance", "capability"]) {
+    for (const field of ["id", "role", "capability"]) {
       assert.ok(field in agent, field);
     }
   }
