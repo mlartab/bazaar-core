@@ -11,12 +11,19 @@
     <div class="card login-card">
       <h1>BAZAAR PROTOCOL</h1>
       <p class="sub">Operator sign-in. The secret never leaves this browser except as an Authorization header to /api/admin/*.</p>
-      <input id="secret" type="password" placeholder="Admin Secret" autocomplete="off" data-tip="Bearer secret for /api/admin/*; stored in localStorage only" />
-      <button id="login">Authenticate</button>
+      <input class="input" id="secret" type="password" placeholder="Admin Secret" autocomplete="off" data-tip="Bearer secret for /api/admin/*; stored in localStorage only" />
+      <button class="btn" id="login">Authenticate</button>
       <p class="sub" id="login-note"></p>
       <p><a href="/">← Back to home</a></p>
     </div>
   </main>
   <script src="/login.js"></script>
+  <footer class="site-footer">
+    <div class="container">
+      <strong>BAZAAR//</strong>
+      <span>Trust layer for agent commerce.</span>
+      <span class="mono">Schema -&gt; Referee -&gt; State -&gt; Ledger</span>
+    </div>
+  </footer>
 </body>
 </html>

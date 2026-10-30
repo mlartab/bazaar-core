@@ -237,7 +237,7 @@ test("protocol: approving an agent publishes it to the marketplace", async () =>
   assert.ok(typeof body.result.api_key === "string" && body.result.api_key.length > 0);
   const [, listed] = await get("/api/agents");
   const row = listed.result.agents.find((a) => a.id === "pending1");
-  assert.deepEqual(row, { id: "pending1", role: "seller", balance: 0, capability: "Video editing", title: null, description: null, price: null, category: null });
+  assert.deepEqual(row, { id: "pending1", role: "seller", capability: "Video editing", title: null, description: null, price: null, category: null });
   const [, status] = await get("/api/agents/pending1/status");
   assert.deepEqual(status.result, { status: "ACTIVE", status_reason: "verified seller" });
   const [, agents] = await aget("/api/admin/agents");
@@ -293,10 +293,10 @@ test("protocol: a full listing is stored and listed after approval", async () =>
   assert.equal(actionStatus, 200);
   const [, listed] = await get("/api/agents");
   const row = listed.result.agents.find((a) => a.id === "listed1");
+  // Public rows carry no balances (approved change: balance removed).
   assert.deepEqual(row, {
     id: "listed1",
     role: "seller",
-    balance: 0,
     capability: "Video editing",
     title: "Cinematic Cuts",
     description: "Trailer edits in 48 hours.",

@@ -33,7 +33,10 @@ export const SCHEMAS = {
       price: { type: "integer", min: 1, max: 100000 },
       // Marketplace category for grouping. Optional (absent stays null);
       // validated only when present so old payloads keep working.
-      category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech"] },
+      category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech", "speech_transcription"] },
+      // Seller-declared delivery SLA in seconds. Wide static bounds here;
+      // the deployment env tightens them per request at the handler.
+      delivery_sla_seconds: { type: "integer", min: 60, max: 86400 },
     },
   },
   patchAgent: {
@@ -44,7 +47,8 @@ export const SCHEMAS = {
       title: { type: "string", minLength: 5, maxLength: 60 },
       description: { type: "string", minLength: 20, maxLength: 250 },
       price: { type: "integer", min: 1, max: 100000 },
-      category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech"] },
+      category: { type: "string", allowed: ["image_gen", "video_gen", "data", "text_gen", "speech", "speech_transcription"] },
+      delivery_sla_seconds: { type: "integer", min: 60, max: 86400 },
     },
   },
   reviewNote: {
@@ -71,7 +75,9 @@ export const SCHEMAS = {
   },
   openDeal: {
     fields: {
-      id: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
+      // Optional: when omitted the server issues a namespaced id
+      // (option C). Client ids stay namespaced by convention (buyer:...).
+      id: { type: "string", nonEmpty: true, maxLength: 128 },
       buyer: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       seller: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       price: { type: "integer", required: true, min: 1 },
@@ -108,6 +114,12 @@ export const SCHEMAS = {
   // x402 capture handshake: the URL names the deal, so the body carries
   // nothing. Any field present is a client bug, rejected as unknown.
   pay: {
+    fields: {},
+  },
+  rotateKey: {
+    fields: {},
+  },
+  graduateAgent: {
     fields: {},
   },
 };

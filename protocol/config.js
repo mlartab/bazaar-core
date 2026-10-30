@@ -23,3 +23,49 @@ export const IDEMPOTENCY_SWEEP_MS = 10 * 60 * 1000;
 export function isDemoSafe(env = process.env) {
   return env.DEMO_SAFE === "true";
 }
+// Opt-in permissionless onboarding: when "true", new agents start ACTIVE
+// with probation caps instead of PENDING review. Default off.
+export function isAutoApprove(env = process.env) {
+  return env.AUTO_APPROVE === "true";
+}
+// Probation economics: max deal price and max concurrent (non-terminal)
+// deals where the probation agent is buyer OR seller.
+export function probationPriceCap(env = process.env) {
+  const n = Number(env.PROBATION_MAX_PRICE ?? 500);
+  return Number.isInteger(n) && n >= 1 ? n : 500;
+}
+export function probationMaxDeals(env = process.env) {
+  const n = Number(env.PROBATION_MAX_DEALS ?? 5);
+  return Number.isInteger(n) && n >= 1 ? n : 5;
+}
+// Anti-spam for open registration: max registrations per IP per hour.
+// X-Forwarded-For leftmost entry wins; direct connections use the socket.
+export function registrationPerIpPerHour(env = process.env) {
+  const n = Number(env.REGISTRATION_PER_IP_PER_HOUR ?? 20);
+  return Number.isInteger(n) && n >= 1 ? n : 20;
+}
+// Negotiation window: how long NEGOTIATING/AGREED may sit before the
+// session sweeper rejects. Read at boot like the other timing envs.
+export function negotiationWindowMs(env = process.env) {
+  const n = Number(env.NEGOTIATION_WINDOW_MS ?? 60000);
+  return Number.isInteger(n) && n >= 1 ? n : 60000;
+}
+// Inspection window: how long VERIFYING may wait for the AI verdict.
+// Read at boot and passed into the session manager like the sweeps.
+export function inspectionTimeoutMs(env = process.env) {
+  const n = Number(env.INSPECTION_TIMEOUT_MS ?? 300000);
+  return Number.isInteger(n) && n >= 1 ? n : 300000;
+}
+// Seller-declared delivery SLA bounds (seconds). The schema enforces the
+// widest legal range; these envs tighten it per deployment.
+export function deliverySlaBounds(env = process.env) {
+  const num = (v, d) => {
+    const n = Number(v);
+    return Number.isInteger(n) && n >= 1 ? n : d;
+  };
+  return {
+    min: num(env.DELIVERY_SLA_MIN_SECONDS, 60),
+    max: num(env.DELIVERY_SLA_MAX_SECONDS, 86400),
+    def: num(env.DELIVERY_SLA_DEFAULT_SECONDS, 300),
+  };
+}

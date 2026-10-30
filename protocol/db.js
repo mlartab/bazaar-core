@@ -162,6 +162,20 @@ export function openStore(path) {
         // Column present: nothing to migrate.
       }
     }
+    // Seller-declared delivery SLA (seconds). Old rows predate it and read
+    // NULL, which the handler maps to the env default.
+    try {
+      db.exec("ALTER TABLE agents ADD COLUMN delivery_sla_seconds INTEGER DEFAULT 300");
+    } catch {
+      // Column present: nothing to migrate.
+    }
+    // Per-deal snapshot of the listing SLA at open time, so later listing
+    // edits never change a running deal. NULL = pre-snapshot row.
+    try {
+      db.exec("ALTER TABLE deals ADD COLUMN sla_ms INTEGER");
+    } catch {
+      // Column present: nothing to migrate.
+    }
     // Agent credentials. Pre-key rows (and any fresh row saved without one)
     // get a random key: authentication must never fail open on NULL.
     try {
@@ -171,6 +185,13 @@ export function openStore(path) {
     }
     for (const row of db.prepare("SELECT id FROM agents WHERE api_key IS NULL").all()) {
       db.prepare("UPDATE agents SET api_key = ? WHERE id = ?").run(randomUUID(), row.id);
+    }
+    // Probation marker for AUTO_APPROVE onboarding. Nullable-tolerant:
+    // older rows read as not-on-probation via COALESCE at read time.
+    try {
+      db.exec("ALTER TABLE agents ADD COLUMN probation INTEGER DEFAULT 0");
+    } catch {
+      // Column present: nothing to migrate.
     }
   } catch (err) {
     try {
@@ -195,7 +216,7 @@ export function openStore(path) {
 
     saveAgent(agent) {
       if (!agent || !isValidId(agent.id)) return fail("BAD_ID", "agent must have a non-empty string id");
-      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, category, api_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, category, api_key, probation, delivery_sla_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         agent.id,
         agent.role ?? null,
         agent.balance ?? null,
@@ -209,7 +230,29 @@ export function openStore(path) {
         // The server always passes a fresh key; this default keeps the
         // column invariant (never NULL) for direct store callers too.
         agent.api_key ?? randomUUID(),
+        agent.probation === 1 ? 1 : 0,
+        agent.delivery_sla_seconds ?? 300,
       ]);
+      return { ok: true };
+    },
+    // Atomic key rotation: one UPDATE swaps the credential; the old key
+    // stops resolving on the next lookup. Returns the new key.
+    rotateAgentKey(id) {
+      if (!isValidId(id)) return fail("BAD_ID", "agent must have a non-empty string id");
+      const fresh = randomUUID();
+      const result = run("UPDATE agents SET api_key = ? WHERE id = ?", [fresh, id]);
+      if (result.changes === 0) return fail("NO_SUCH_AGENT", `no agent with id ${id}`);
+      return { ok: true, api_key: fresh };
+    },
+    getAgentProbation(id) {
+      if (!isValidId(id)) return null;
+      const row = get("SELECT COALESCE(probation, 0) AS probation FROM agents WHERE id = ?", [id]);
+      return row === undefined ? null : row.probation;
+    },
+    setAgentProbation(id, value) {
+      if (!isValidId(id)) return fail("BAD_ID", "agent must have a non-empty string id");
+      const result = run("UPDATE agents SET probation = ? WHERE id = ?", [value === 1 ? 1 : 0, id]);
+      if (result.changes === 0) return fail("NO_SUCH_AGENT", `no agent with id ${id}`);
       return { ok: true };
     },
     // Credential lookup: the only reader that touches api_key, so keys never
@@ -242,7 +285,7 @@ export function openStore(path) {
       // here by construction rather than by UI filtering. Suspension and
       // retirement change visibility only: escrows, deals, and balances
       // are untouched, so in-flight work settles naturally.
-      return all("SELECT id, role, balance, capability, title, description, price, category FROM agents WHERE role = 'seller' AND status = 'ACTIVE' ORDER BY rowid");
+      return all("SELECT id, role, capability, title, description, price, category FROM agents WHERE role = 'seller' AND status = 'ACTIVE' ORDER BY rowid");
     },
     listAllAgents() {
       // Operator-only: moderation needs every row including hidden ones.
@@ -275,6 +318,10 @@ export function openStore(path) {
       if (!isValidId(id)) return null;
       return get("SELECT category FROM agents WHERE id = ?", [id])?.category ?? null;
     },
+    getAgentSla(id) {
+      if (!isValidId(id)) return null;
+      return get("SELECT delivery_sla_seconds FROM agents WHERE id = ?", [id])?.delivery_sla_seconds ?? null;
+    },
     // Allowlisted partial update for operator edits. Unknown fields are
     // rejected by the caller (patchAgent schema); here only known columns
     // are ever written.
@@ -282,7 +329,7 @@ export function openStore(path) {
       if (!isValidId(id)) return fail("BAD_ID", "agent must have a non-empty string id");
       const sets = [];
       const params = [];
-      for (const column of ["title", "description", "price", "category"]) {
+      for (const column of ["title", "description", "price", "category", "delivery_sla_seconds"]) {
         if (patch[column] !== undefined) {
           sets.push(`${column} = ?`);
           params.push(patch[column]);
@@ -318,7 +365,7 @@ export function openStore(path) {
       if (typeof deal.state !== "string" || deal.state.length === 0) {
         return fail("BAD_STATE", "deal must have a non-empty string state");
       }
-      run("INSERT INTO deals (id, state, buyer, seller, price, expires_at, close_reason, delivery_expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+      run("INSERT INTO deals (id, state, buyer, seller, price, expires_at, close_reason, delivery_expires_at, sla_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         deal.id,
         deal.state,
         deal.buyer ?? null,
@@ -327,8 +374,15 @@ export function openStore(path) {
         deal.expires_at ?? null,
         deal.close_reason ?? null,
         deal.delivery_expires_at ?? null,
+        deal.sla_ms ?? null,
       ]);
       return { ok: true };
+    },
+    // Full deal row for the detail endpoint (timestamps, SLA snapshot,
+    // close reason). getDeal's frozen shape is untouched.
+    getDealRow(id) {
+      if (!isValidId(id)) return null;
+      return get("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, sla_ms, updated_at FROM deals WHERE id = ?", [id]) ?? null;
     },
     getDeal(id) {
       // Column list frozen: existing readers assert this exact shape.
@@ -378,6 +432,19 @@ export function openStore(path) {
         `SELECT COUNT(*) AS n FROM deals WHERE (buyer = ? OR seller = ?)${filter}`,
         params,
       ).n;
+    },
+    // Open deals where the agent is buyer OR seller (non-terminal states).
+    countOpenDealsByParty(agentId) {
+      return get(
+        "SELECT COUNT(*) AS n FROM deals WHERE (buyer = ? OR seller = ?) AND state NOT IN ('SETTLED', 'REJECTED')",
+        [agentId, agentId],
+      ).n;
+    },
+    // Operator detail: full row plus probation marker. Separate from the
+    // frozen list shapes so existing readers never change.
+    getAgentDetail(id) {
+      if (!isValidId(id)) return null;
+      return get("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, COALESCE(probation, 0) AS probation FROM agents WHERE id = ?", [id]) ?? null;
     },
     listExpiringDeals(now) {
       // Only live negotiations can time out: terminal states are done, and

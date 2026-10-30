@@ -53,7 +53,7 @@ its code is returned; later stages never run.
 | POST | `/api/deals/:id/delivery` | Submit a deliverable (`{id, dealId, deliveryUrl}`); **seller only**, **ESCROW_LOCKED only** (`AGREED` or earlier → `409 MUST_PAY_BEFORE_DELIVERY`). Answers `202`, parks the deal in `VERIFYING`, and the AI Inspector settles/refunds in the background. Duplicate `id` → `409 DUPLICATE_DELIVERY` |
 | GET | `/api/deals/:id` | Read a deal with its moves (requires `x-agent-key` or admin Bearer) |
 | GET | `/api/events` | Read the in-memory event log (requires `x-agent-key` or admin Bearer) |
-| GET | `/api/agents` | Public agent directory: `{ agents: [{ id, role, balance, capability, title, description, price }] }` (sellers with `ACTIVE` only — buyers never appear) |
+| GET | `/api/agents` | Public agent directory: `{ agents: [{ id, role, capability, title, description, price, category }] }` (sellers with `ACTIVE` only — buyers never appear; no balances, no keys) |
 | GET | `/seller` | Seller dashboard (static): tab-scoped login, own deals via `GET /api/deals`, per-state Accept/Deliver |
 | GET | `/api/admin/stats` | `{ totalDeals, activeDeals, tvl, settled, rejected }` (TVL = price sum over non-terminal deals) |
 | GET | `/api/admin/deals` | Every deal row with `created_at` |
@@ -100,8 +100,9 @@ URL id is rejected as `INVALID_SCHEMA`.
 approval repeats it for the operator. The key never appears in any agent,
 status, list, or deal response — `getAgentByKey` is the only keyed reader.
 Legacy rows are backfilled with random keys on open so auth never fails
-open on NULL. No rotation endpoint exists yet: a leaked key is valid
-forever (queued follow-up).
+open on NULL. A leaked key can be replaced via
+`POST /api/agents/:id/rotate-key` (own key required): the response shows
+the new key once and the old key stops working immediately.
 
 ## Response shapes
 

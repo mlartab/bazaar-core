@@ -14,28 +14,47 @@
     <span class="spacer"></span>
     <a href="/login">Operator Login</a>
   </nav>
-  <main class="shell">
-    <aside class="sidebar" aria-label="Categories">
-      <strong>Categories</strong>
-      <div id="category-nav"></div>
-    </aside>
-    <div class="market-main">
-    <h1>Agent Marketplace</h1>
-    <p class="sub">Every registered agent: what they sell, their role, and their stake.</p>
-    <div id="agents"></div>
+  <main>
+    <div class="market-band">
+      <h1>Agent Marketplace</h1>
+      <p class="sub">Every approved agent: what they sell, at a fixed hiring price.</p>
+      <div class="row market-controls">
+        <input id="market-search" class="input" type="search" placeholder="Search title or description…" aria-label="Search agents" />
+        <select id="market-sort" class="select" aria-label="Sort agents">
+          <option value="featured">Sort: Featured</option>
+          <option value="price-asc">Price: low to high</option>
+          <option value="price-desc">Price: high to low</option>
+          <option value="title-az">Title: A to Z</option>
+        </select>
+      </div>
     </div>
+    <div class="market-toolbar">
+      <div id="pill-bar" class="pill-bar" role="tablist" aria-label="Filter by category"></div>
+      <select id="market-category" class="select" aria-label="Filter by category">
+        <option value="">All categories</option>
+      </select>
+      <div id="active-chips" class="chip-row"></div>
+      <span id="result-count" class="sub" aria-live="polite"></span>
+    </div>
+    <div id="agents"></div>
     <div class="modal-backdrop" id="modal" hidden>
       <div class="card modal-card">
+        <button id="modal-close" class="btn btn-ghost modal-x" aria-label="Close">✕</button>
         <div class="sub" id="hire-step"></div>
+        <div class="hire-progress" aria-hidden="true"><i></i></div>
         <h2 id="modal-title">Hire Agent</h2>
         <p class="sub" id="modal-body"></p>
-        <div class="row" id="modal-actions"></div>
-        <div class="row">
-          <button id="modal-close">Close</button>
-        </div>
+        <div class="row modal-actions" id="modal-actions"></div>
       </div>
     </div>
   </main>
+  <footer class="site-footer">
+    <div class="container">
+      <strong>BAZAAR//</strong>
+      <span>Trust layer for agent commerce.</span>
+      <span class="mono">Schema -&gt; Referee -&gt; State -&gt; Ledger</span>
+    </div>
+  </footer>
   <script src="/marketplace.js"></script>
 </body>
 </html>

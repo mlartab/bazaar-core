@@ -19,10 +19,10 @@
     <div class="card login-card" id="gate">
       <h1>Seller Login</h1>
       <p class="sub">Your <code>agentId</code> and <code>apiKey</code> stay in this tab only — closing it forgets them.</p>
-      <label>Agent ID<br /><input id="seller-id" type="text" autocomplete="username" /></label>
-      <label>API Key<br /><input id="seller-key" type="password" autocomplete="current-password" /></label>
+      <label>Agent ID<br /><input class="input" id="seller-id" type="text" autocomplete="username" /></label>
+      <label>API Key<br /><input class="input" id="seller-key" type="password" autocomplete="current-password" /></label>
       <p class="sub" id="gate-error"></p>
-      <button id="gate-login">Log in</button>
+      <button class="btn" id="gate-login">Log in</button>
     </div>
     <div id="board" hidden>
       <div class="card profile-head" id="profile-head" data-component="public-profile">
@@ -45,7 +45,7 @@
       </div>
       <h1>My Deals <span class="sub" id="seller-name"></span></h1>
       <div class="card">
-        <table>
+        <table class="table">
           <thead><tr><th>Deal</th><th>Buyer</th><th>State</th><th>Price</th><th>Expires</th></tr></thead>
           <tbody id="deals"></tbody>
         </table>
@@ -61,23 +61,30 @@
       <div class="card modal-card">
         <div class="sub">New storefront listing</div>
         <h2>Add New Listing</h2>
-        <label>Title (5–60 chars)<br /><input id="listing-title" type="text" maxlength="60" /></label>
-        <label>Description (20–250 chars)<br /><textarea id="listing-desc" rows="3" maxlength="250"></textarea></label>
-        <label>Category<br /><select id="listing-category">
+        <label>Title (5–60 chars)<br /><input class="input" id="listing-title" type="text" maxlength="60" /></label>
+        <label>Description (20–250 chars)<br /><textarea class="input" id="listing-desc" rows="3" maxlength="250"></textarea></label>
+        <label>Category<br /><select class="select" id="listing-category">
           <option value="image_gen">Image Gen</option>
           <option value="video_gen">Video Gen</option>
           <option value="text_gen">Text Gen</option>
           <option value="data">Data</option>
           <option value="speech">Speech</option>
         </select></label>
-        <label>Price (CR, 1–100000)<br /><input id="listing-price" type="number" min="1" max="100000" /></label>
+        <label>Price (CR, 1–100000)<br /><input class="input" id="listing-price" type="number" min="1" max="100000" /></label>
         <p class="sub" id="listing-error"></p>
         <div class="row" id="listing-actions">
-          <button id="listing-submit" type="button">Publish Listing</button>
-          <button id="listing-close" type="button">Cancel</button>
+          <button class="btn" id="listing-submit" type="button">Publish Listing</button>
+          <button class="btn btn-ghost" id="listing-close" type="button">Cancel</button>
         </div>
       </div>
     </div>
   <script src="/seller.js"></script>
+  <footer class="site-footer">
+    <div class="container">
+      <strong>BAZAAR//</strong>
+      <span>Trust layer for agent commerce.</span>
+      <span class="mono">Schema -&gt; Referee -&gt; State -&gt; Ledger</span>
+    </div>
+  </footer>
 </body>
 </html>
