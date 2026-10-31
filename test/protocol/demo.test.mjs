@@ -65,6 +65,14 @@ before(async () => {
   const [s1, b1] = await post("/api/agents", { id: "demo-buyer", role: "buyer" });
   assert.equal(s1, 200);
   buyerKey = b1.result.api_key;
+  // Commerce requires ACTIVE counterparties (demo-seller was never even
+  // registered before; both sides must exist and be approved).
+  const [ss] = await post("/api/agents", { id: "demo-seller", role: "seller" });
+  assert.equal(ss, 200);
+  for (const id of ["demo-buyer", "demo-seller"]) {
+    const [as] = await apost(`/api/admin/agents/${id}/approve`, {});
+    assert.equal(as, 200, id);
+  }
 });
 
 after(async () => {

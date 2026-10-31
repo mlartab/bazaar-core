@@ -60,6 +60,16 @@ before(async () => {
   buyerKey = await register("auth-buyer", "buyer");
   sellerKey = await register("auth-seller", "seller");
   rivalKey = await register("auth-rival", "buyer");
+  // Commerce requires ACTIVE counterparties. auth-buyer is deliberately
+  // left PENDING: its own approval test promotes it mid-file.
+  for (const id of ["auth-seller", "auth-rival"]) {
+    const res = await fetch(url + `/api/admin/agents/${id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": freshKey(), authorization: `Bearer ${process.env.ADMIN_SECRET}` },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 200, id);
+  }
 });
 
 after(async () => {

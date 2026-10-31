@@ -47,6 +47,15 @@ before(async () => {
   buyerKey = (await post("/api/agents", { id: "s-buyer", role: "buyer" }))[1].result.api_key;
   sellerKey = (await post("/api/agents", { id: "s-seller", role: "seller" }))[1].result.api_key;
   spyKey = (await post("/api/agents", { id: "s-spy", role: "buyer" }))[1].result.api_key;
+  // Commerce requires ACTIVE counterparties.
+  for (const id of ["s-buyer", "s-seller", "s-spy"]) {
+    const res = await fetch(url + `/api/admin/agents/${id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": freshKey(), authorization: `Bearer ${process.env.ADMIN_SECRET}` },
+      body: JSON.stringify({}),
+    });
+    assert.equal(res.status, 200, id);
+  }
 });
 
 after(async () => {

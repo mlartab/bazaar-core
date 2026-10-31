@@ -10,6 +10,7 @@ import { MENU } from "../../src/menu.js";
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
 process.env.NO_PROXY = "127.0.0.1,localhost";
 process.env.no_proxy = "127.0.0.1,localhost";
+process.env.ADMIN_SECRET = "test-admin-secret";
 
 let url;
 let stop;
@@ -32,6 +33,15 @@ async function post(p, body, k = freshKey(), agentKey = buyerKey) {
     body: JSON.stringify(body),
   });
   return [res.status, await res.json()];
+}
+
+async function approve(id) {
+  const res = await fetch(url + `/api/admin/agents/${id}/approve`, {
+    method: "POST",
+    headers: { "content-type": "application/json", "idempotency-key": freshKey(), authorization: `Bearer ${process.env.ADMIN_SECRET}` },
+    body: JSON.stringify({}),
+  });
+  assert.equal(res.status, 200, id);
 }
 
 async function postNoKey(p, body, agentKey = buyerKey) {
@@ -89,6 +99,9 @@ before(async () => {
   assert.equal(s2, 200);
   assertOk(b2);
   sellerKey = b2.result.api_key;
+  // Commerce requires ACTIVE counterparties.
+  await approve("buyer");
+  await approve("seller");
 });
 
 after(async () => {

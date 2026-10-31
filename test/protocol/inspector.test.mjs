@@ -7,11 +7,13 @@ import { openStore } from "../../protocol/db.js";
 import { createLedger, checkInvariant, balanceOf } from "../../src/ledger.js";
 import { startServer, reconcileLedger } from "../../protocol/server.js";
 import { mockVerdict, runInspection, parseVerdict, buildInspectionPrompt } from "../../protocol/inspector.js";
+import { DEFINITION, execute, inspectorMode } from "../../protocol/meta-brain.js";
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
 process.env.NO_PROXY = "127.0.0.1,localhost";
 process.env.no_proxy = "127.0.0.1,localhost";
+process.env.ADMIN_SECRET = "test-inspector-secret";
 
 const closers = [];
 after(async () => {
@@ -62,6 +64,39 @@ test("protocol: mockVerdict fails only the documented markers", () => {
   assert.equal(mockVerdict("deliverable:abc"), "SETTLED");
   for (const marker of ["reject", "REJECT", "fail", "invalid"]) {
     assert.equal(mockVerdict(`deliverable:${marker}-me`), "REJECTED");
+  }
+});
+
+test("protocol: meta-brain DEFINITION describes the inspection tool", () => {
+  assert.equal(DEFINITION.name, "inspect_deliverable");
+  assert.deepEqual(DEFINITION.parameters.required, ["deliverable_url", "prompt"]);
+  assert.ok(typeof DEFINITION.parameters.properties.deliverable_url.description === "string");
+  assert.ok(typeof DEFINITION.parameters.properties.prompt.description === "string");
+  assert.deepEqual(DEFINITION.returns.required, ["valid", "reason"]);
+});
+
+test("protocol: meta-brain execute mocks keyless and rejects bad input", async () => {
+  const saved = process.env.MODEL_API_KEY;
+  delete process.env.MODEL_API_KEY;
+  try {
+    assert.equal(inspectorMode(), "mock");
+    assert.deepEqual(await execute({ deliverable_url: "deliverable:abc", prompt: "paint it" }), {
+      valid: true,
+      reason: "Mocked pass",
+    });
+    const bad = await execute({ deliverable_url: "deliverable:reject-me", prompt: "paint it" });
+    assert.equal(bad.valid, false);
+    assert.deepEqual(await execute({ deliverable_url: "", prompt: "paint it" }), {
+      valid: null,
+      reason: "BAD_INPUT: deliverable_url must be a non-empty string",
+    });
+    assert.deepEqual(await execute({ deliverable_url: "deliverable:abc", prompt: "" }), {
+      valid: null,
+      reason: "BAD_INPUT: prompt must be a non-empty string",
+    });
+  } finally {
+    if (saved === undefined) delete process.env.MODEL_API_KEY;
+    else process.env.MODEL_API_KEY = saved;
   }
 });
 
@@ -185,6 +220,15 @@ test("protocol: escrow survives a server restart and settles at the accept price
   const first = await startServer({ dbPath: file, port: 0 });
   const buyerKey = (await (await post(first.url, "/api/agents", { id: "rb", role: "buyer" })).json()).result.api_key;
   const sellerKey = (await (await post(first.url, "/api/agents", { id: "rs", role: "seller" })).json()).result.api_key;
+  // Commerce requires ACTIVE counterparties.
+  for (const id of ["rb", "rs"]) {
+    const approved = await fetch(`${first.url}/api/admin/agents/${id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": freshKey(), authorization: `Bearer ${process.env.ADMIN_SECRET}` },
+      body: JSON.stringify({}),
+    });
+    assert.equal(approved.status, 200, id);
+  }
   assert.equal((await post(first.url, "/api/deals", { id: "r-deal", buyer: "rb", seller: "rs", price: 50 }, buyerKey)).status, 200);
   assert.equal((await post(first.url, "/api/deals/r-deal/moves", { key: "k1", kind: "OFFER", price: 50 }, buyerKey)).status, 200);
   assert.equal((await post(first.url, "/api/deals/r-deal/moves", { key: "k2", kind: "ACCEPT", price: 40 }, sellerKey)).status, 200);

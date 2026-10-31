@@ -9,6 +9,7 @@ import { startServer } from "../../protocol/server.js";
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
 process.env.NO_PROXY = "127.0.0.1,localhost";
 process.env.no_proxy = "127.0.0.1,localhost";
+process.env.ADMIN_SECRET = "test-pay-secret";
 
 let url;
 let stop;
@@ -66,6 +67,15 @@ before(async () => {
   const seller = await postRaw("/api/agents", { id: "payee", role: "seller" });
   assert.equal(seller.status, 200);
   payeeKey = seller.body.result.api_key;
+  // Commerce requires ACTIVE counterparties.
+  for (const id of ["payer", "payee"]) {
+    const approved = await fetch(url + `/api/admin/agents/${id}/approve`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "idempotency-key": freshKey(), authorization: `Bearer ${process.env.ADMIN_SECRET}` },
+      body: JSON.stringify({}),
+    });
+    assert.equal(approved.status, 200, id);
+  }
 });
 
 after(async () => {

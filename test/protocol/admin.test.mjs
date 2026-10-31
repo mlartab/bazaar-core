@@ -82,6 +82,11 @@ before(async () => {
   assert.equal(s2, 200);
   assertOk(b2);
   sellerKey = b2.result.api_key;
+  // Commerce requires ACTIVE counterparties.
+  for (const id of ["buyer", "seller"]) {
+    const [status] = await moderate(id, "approve", {});
+    assert.equal(status, 200, id);
+  }
 });
 
 after(async () => {

@@ -13,6 +13,7 @@
 import { transition } from "../src/deal-states.js";
 import { settle, refund } from "../src/ledger.js";
 import { isKnownCapability, inspectImageLocally, inspectAudioLocally } from "./capabilities.js";
+import { execute as inspectWithBrain, inspectorMode } from "./meta-brain.js";
 
 // Capability resolution: explicit per-delivery override first, then the
 // seller's registered capability, then null (today's mock/vision path).
@@ -25,9 +26,14 @@ function resolveCapability({ store, deal, capability }) {
   return null;
 }
 
-function hasByokKey() {
-  const apiKey = process.env.MODEL_API_KEY;
-  return typeof apiKey === "string" && apiKey.length > 0;
+// Meta Tool Pattern: the model-call layer lives in meta-brain.js; this maps
+// its { valid, reason } envelope onto inspector verdicts. null means the
+// tool was inconclusive, which freezes escrow — the fail-frozen rule.
+async function modelVerdict({ deliveryUrl, prompt }) {
+  const decided = await inspectWithBrain({ deliverable_url: deliveryUrl, prompt });
+  if (decided.valid === true) return "SETTLED";
+  if (decided.valid === false) return "REJECTED";
+  return "INCONCLUSIVE";
 }
 
 // Zero-cost local verdict. Bytes come from the inspector's guarded fetch;
@@ -141,35 +147,6 @@ export function parseVerdict(data) {
   return "INCONCLUSIVE";
 }
 
-async function visionVerdict({ dealId, price, seller, deliveryUrl }) {
-  const apiKey = process.env.MODEL_API_KEY;
-  if (typeof apiKey !== "string" || apiKey.length === 0) {
-    return mockVerdict(deliveryUrl);
-  }
-  const base = process.env.META_BASE_URL ?? "https://api.meta.ai/v1";
-  const model = process.env.META_MODEL ?? "muse-spark-1.3";
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS);
-  try {
-    const deliverable = await fetchDeliverable(deliveryUrl, ctrl.signal);
-    if (deliverable === null) return "INCONCLUSIVE";
-    const res = await fetch(`${base}/inspect`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, prompt: buildInspectionPrompt({ dealId, price, seller }), image: deliverable }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) return "INCONCLUSIVE";
-    return parseVerdict(await res.json().catch(() => null));
-  } catch {
-    // Network down, timeout, DNS: frozen, never settled. The next
-    // inspector run (or an operator) can re-drive the verdict.
-    return "INCONCLUSIVE";
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function runInspection({ store, ledger, dealId, deliveryUrl, capability, emit, log }) {
   const deal = store.getDeal(dealId);
   if (deal === null || deal.state !== "VERIFYING") {
@@ -178,21 +155,27 @@ export async function runInspection({ store, ledger, dealId, deliveryUrl, capabi
   }
   // Oracle routing: known modalities go local first (zero cost). text_gen
   // has no local checker yet, so it shares the default path. Unknown or
-  // absent capability keeps today's mock/vision behavior byte-identical.
+  // absent capability keeps today's mock/tool behavior byte-identical.
   const routed = resolveCapability({ store, deal, capability });
-  const prompt = buildInspectionPrompt({ dealId, price: deal.price, seller: deal.seller });
+  // The brief rides the deal: metadata.prompt when the buyer supplied one,
+  // otherwise the server-built deal summary (which admits its limit).
+  const brief = typeof deal.metadata?.prompt === "string" && deal.metadata.prompt.length > 0
+    ? deal.metadata.prompt
+    : buildInspectionPrompt({ dealId, price: deal.price, seller: deal.seller });
   let verdict;
   if (routed !== null && routed !== "text_gen") {
-    const local = await localVerdict({ capability: routed, deliveryUrl, prompt });
+    const local = await localVerdict({ capability: routed, deliveryUrl, prompt: brief });
     (log ?? console).info?.({ dealId, capability: routed, code: local.code }, "inspector.local");
     verdict = local.verdict;
-    // BYOK escalation only: a local INCONCLUSIVE may fall through to the
-    // paid vision call, and only when the caller brought their own key.
-    if (verdict === "INCONCLUSIVE" && hasByokKey()) {
-      verdict = await visionVerdict({ dealId, price: deal.price, seller: deal.seller, deliveryUrl });
+    // Tool escalation only: a local INCONCLUSIVE falls through to the Meta
+    // tool call, and only when the caller brought their own key. Keyless
+    // operation stays frozen here by design — the mock only verdicts on the
+    // default path, exactly like the old visionVerdict escalation rule.
+    if (verdict === "INCONCLUSIVE" && inspectorMode() === "meta") {
+      verdict = await modelVerdict({ deliveryUrl, prompt: brief });
     }
   } else {
-    verdict = await visionVerdict({ dealId, price: deal.price, seller: deal.seller, deliveryUrl });
+    verdict = await modelVerdict({ deliveryUrl, prompt: brief });
   }
   if (verdict === "INCONCLUSIVE") {
     (log ?? console).warn?.({ dealId }, "inspector.inconclusive");

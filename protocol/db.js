@@ -199,6 +199,17 @@ export function openStore(path) {
     } catch {
       // Column present: nothing to migrate.
     }
+    // Negotiation-rule snapshot: the referee prices every move against the
+    // listing as it stood at open, so mid-deal listing edits (floor or
+    // strategy changes) never rewrite the rules of a running deal. NULL on
+    // pre-snapshot rows, which fall back to the live listing at read time.
+    for (const column of ["snapshot_service_type TEXT", "snapshot_min_price INTEGER", "snapshot_listing_price INTEGER"]) {
+      try {
+        db.exec(`ALTER TABLE deals ADD COLUMN ${column}`);
+      } catch {
+        // Column present: nothing to migrate.
+      }
+    }
     // Agent credentials. Pre-key rows (and any fresh row saved without one)
     // get a random key: authentication must never fail open on NULL.
     try {
@@ -456,7 +467,7 @@ export function openStore(path) {
       if (typeof deal.state !== "string" || deal.state.length === 0) {
         return fail("BAD_STATE", "deal must have a non-empty string state");
       }
-      run("INSERT INTO deals (id, state, buyer, seller, price, expires_at, close_reason, delivery_expires_at, sla_ms, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+      run("INSERT INTO deals (id, state, buyer, seller, price, expires_at, close_reason, delivery_expires_at, sla_ms, metadata_json, snapshot_service_type, snapshot_min_price, snapshot_listing_price) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         deal.id,
         deal.state,
         deal.buyer ?? null,
@@ -469,6 +480,9 @@ export function openStore(path) {
         // HTTP JSON bodies are always acyclic, so stringify cannot throw
         // here; direct store callers must pass JSON-compatible values too.
         deal.metadata !== undefined ? JSON.stringify(deal.metadata) : null,
+        deal.snapshot_service_type ?? null,
+        deal.snapshot_min_price ?? null,
+        deal.snapshot_listing_price ?? null,
       ]);
       return { ok: true };
     },
@@ -481,6 +495,20 @@ export function openStore(path) {
       const { metadata_json, ...full } = row;
       const metadata = parseMetadata(metadata_json);
       return metadata === null ? full : { ...full, metadata };
+    },
+    // Negotiation-rule snapshot for the referee: the listing shape as it
+    // stood at open ({ service_type, min_price, price }), or null for
+    // pre-snapshot rows, which fall back to the live listing. Internal to
+    // pricing — never part of the wire deal shape.
+    getDealSnapshot(id) {
+      if (!isValidId(id)) return null;
+      const row = get("SELECT snapshot_service_type, snapshot_min_price, snapshot_listing_price FROM deals WHERE id = ?", [id]);
+      if (row === undefined || row === null || row.snapshot_service_type === null) return null;
+      return {
+        service_type: row.snapshot_service_type,
+        min_price: row.snapshot_min_price,
+        price: row.snapshot_listing_price,
+      };
     },
     getDeal(id) {
       // metadata rides alongside the frozen columns: rows saved without it

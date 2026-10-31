@@ -21,17 +21,27 @@ export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIME
     const outcomes = [];
     for (const deal of store.listExpiringDeals(now())) {
       try {
+        // Only AGREED-with-a-lock moves money; a lockless AGREED row (or a
+        // NEGOTIATING one) expires with nothing to release.
+        let refunded = false;
         if (deal.state === "AGREED") {
           // ACCEPT locked escrow at agreement time, so expiry must release
           // it back to the buyer. NEGOTIATING holds no lock: its opening
           // deposit stays buyer balance by design (sandbox faucet, never
           // clawed back).
           const back = refund(ledger, deal.id);
-          if (!back.ok) throw new Error(back.message);
+          if (!back.ok) {
+            // No lock (e.g. a pre-fix lockless AGREED row, or a lock lost to
+            // a failed recovery): there is nothing to release, so expire the
+            // deal instead of erroring forever on every future sweep.
+            if (back.code !== "NO_SUCH_DEAL") throw new Error(back.message);
+          } else {
+            refunded = true;
+          }
         }
         store.setDealState(deal.id, "REJECTED");
         store.setDealCloseReason(deal.id, "EXPIRED_TIMEOUT");
-        outcomes.push({ id: deal.id, from: deal.state, to: "REJECTED", refunded: deal.state === "AGREED" });
+        outcomes.push({ id: deal.id, from: deal.state, to: "REJECTED", refunded });
       } catch (err) {
         outcomes.push({ id: deal.id, from: deal.state, to: null, error: err?.message ?? "sweep failed" });
       }

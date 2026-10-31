@@ -74,6 +74,31 @@ test("protocol: sessions expire a stale AGREED deal and refund the lock", () => 
   }
 });
 
+test("protocol: sessions expire a lockless AGREED deal without getting stuck", () => {
+  const tmp = tempFile();
+  const store = openStore(tmp.file);
+  try {
+    const ledger = createLedger();
+    assert.equal(deposit(ledger, "buyer", 100).ok, true);
+    // A pre-fix row: AGREED state but no ledger lock (e.g. the ACCEPT lock
+    // failed after the state flip, or a recovery lost it).
+    store.saveDeal({ id: "d-nolock", state: "AGREED", buyer: "buyer", seller: "seller", price: 40, expires_at: NOW - 1 });
+    const sessions = createSessionManager({ store, ledger, now: () => NOW });
+    const outcomes = sessions.sweepOnce();
+    assert.deepEqual(outcomes, [{ id: "d-nolock", from: "AGREED", to: "REJECTED", refunded: false }]);
+    const deal = store.listDeals().find((row) => row.id === "d-nolock");
+    assert.equal(deal.state, "REJECTED");
+    assert.equal(deal.close_reason, "EXPIRED_TIMEOUT");
+    // No lock existed, none was fabricated, balance untouched.
+    assert.equal(ledger.locks["d-nolock"], undefined);
+    assert.equal(ledger.balances.buyer, 100);
+    // A second sweep finds nothing overdue: no error-forever loop.
+    assert.deepEqual(sessions.sweepOnce(), []);
+  } finally {
+    cleanup(store, tmp);
+  }
+});
+
 test("protocol: sessions leave fresh and terminal deals alone", () => {
   const tmp = tempFile();
   const store = openStore(tmp.file);
@@ -310,6 +335,15 @@ test("protocol: restart with a VERIFYING deal rebuilds the lock so the sweep can
     first = await startServer({ dbPath: file, port: 0 });
     const buyerKey = (await post(first.url, "/api/agents", { id: "rv-buyer", role: "buyer" }))[1].result.api_key;
     const sellerKey = (await post(first.url, "/api/agents", { id: "rv-seller", role: "seller" }))[1].result.api_key;
+    // Commerce requires ACTIVE counterparties.
+    for (const id of ["rv-buyer", "rv-seller"]) {
+      const approved = await fetch(`${first.url}/api/admin/agents/${id}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": `restart-${(n += 1)}`, authorization: `Bearer ${process.env.ADMIN_SECRET}` },
+        body: JSON.stringify({}),
+      });
+      assert.equal(approved.status, 200, id);
+    }
     assert.equal((await post(first.url, "/api/deals", { id: "d-restart-verify", buyer: "rv-buyer", seller: "rv-seller", price: 50 }, buyerKey))[0], 200);
     assert.equal((await post(first.url, "/api/deals/d-restart-verify/moves", { key: "k1", kind: "OFFER", price: 50 }, buyerKey))[0], 200);
     assert.equal((await post(first.url, "/api/deals/d-restart-verify/moves", { key: "k2", kind: "ACCEPT", price: 40 }, sellerKey))[0], 200);

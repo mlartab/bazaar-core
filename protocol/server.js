@@ -109,6 +109,7 @@ export function reconcileLedger({ store, ledger }) {
 }
 import { validate as validateSchema } from "./schemas.js";
 import { runInspection } from "./inspector.js";
+import { inspectorMode } from "./meta-brain.js";
 import { syncProfile, syncAgentRegistration, syncAgentStatus, syncAgentEmails } from "./supabase-sync.js";
 import { supabaseAdmin } from "./supabase.js";
 import { validate as validateReferee } from "../src/referee.js";
@@ -437,7 +438,10 @@ export function createApp(dbPath) {
     // Endpoints and compute are strict (price is the floor); negotiation
     // services use min_price so custom work can settle below list.
     const role = agent !== undefined && agent !== null && agent.id === deal.seller ? "seller" : "buyer";
-    const listing = store.getAgentDetail(deal.seller);
+    // Snapshot-first pricing: a deal negotiates under the listing as it
+    // stood at open. Pre-snapshot rows (NULL columns) fall back to the live
+    // listing so nothing breaks on old databases.
+    const listing = store.getDealSnapshot(deal.id) ?? store.getAgentDetail(deal.seller);
     const listingPrice = listing?.price;
     const serviceType = listing?.service_type ?? "negotiation";
     return {
@@ -700,6 +704,15 @@ export function createApp(dbPath) {
       if (agent.id !== body.buyer && agent.id !== body.seller) {
         return [403, error("FORBIDDEN", `agent ${agent.id} is not a party of this deal`)];
       }
+      // Commerce integrity: only ACTIVE agents trade. PENDING listings wait
+      // in the review queue, and REJECTED/SUSPENDED/RETIRED (or unknown)
+      // agents are out of the market entirely — in-flight deals of
+      // sanctioned agents keep settling, but no new deal may name them.
+      for (const [label, party] of [["buyer", body.buyer], ["seller", body.seller]]) {
+        if (store.getAgentStatus(party)?.status !== "ACTIVE") {
+          return [403, error("FORBIDDEN", `${label} ${party} is not ACTIVE`)];
+        }
+      }
       // Option C ids: omitted ids are server-issued (`deal-<8hex>`);
       // explicit client ids keep working unchanged. Idempotency still
       // dedupes the retry, returning the same issued id.
@@ -726,7 +739,11 @@ export function createApp(dbPath) {
       // sla_ms snapshots the seller's listing SLA so later listing edits
       // never change a running deal's delivery deadline.
       const slaSeconds = store.getAgentSla(body.seller) ?? deliverySlaBounds().def;
-      store.saveDeal({ id: dealId, state: "NEGOTIATING", buyer: body.buyer, seller: body.seller, price: body.price, expires_at: sessions.expiresAt(), sla_ms: slaSeconds * 1000, metadata: body.metadata });
+      // Negotiation rules ride the deal like the SLA snapshot: the floor and
+      // strategy in force at open, so later listing edits cannot rewrite a
+      // running negotiation (see refereeContext).
+      const openListing = store.getAgentDetail(body.seller);
+      store.saveDeal({ id: dealId, state: "NEGOTIATING", buyer: body.buyer, seller: body.seller, price: body.price, expires_at: sessions.expiresAt(), sla_ms: slaSeconds * 1000, metadata: body.metadata, snapshot_service_type: openListing?.service_type ?? "negotiation", snapshot_min_price: Number.isInteger(openListing?.min_price) ? openListing.min_price : null, snapshot_listing_price: Number.isInteger(openListing?.price) ? openListing.price : null });
       emit({ type: "DEAL_OPENED", dealId, state: "NEGOTIATING" });
       const deal = store.getDeal(dealId);
       return [200, { ok: true, state: deal.state, allowedMoves: movesFor(deal.state), result: { deal } }];
@@ -758,6 +775,19 @@ export function createApp(dbPath) {
         if (!advanced.ok) return stageError(advanced);
         next = advanced;
       }
+      // Lock BEFORE anything is persisted: AGREED must imply funds locked. A
+      // failed lock returns here with no move recorded and no state changed,
+      // so the deal stays NEGOTIATING and the key remains reusable. The
+      // duplicate-key check rides ahead of the lock so a consumed key replays
+      // its 409 instead of locking funds for a move that can never be saved
+      // (the handler is synchronous to this point, so the precheck holds).
+      if (next !== null) {
+        if (store.listMoves(id).some((row) => row.key === merged.key)) {
+          return [409, error("DUPLICATE_MOVE", `move key ${merged.key} was already stored for deal ${id}`)];
+        }
+        const locked = lock(ledger, deal.buyer, id, merged.price);
+        if (!locked.ok) return [400, toContractError(locked)];
+      }
       const saved = store.saveMove({
         id: `${id}:${merged.key}`,
         deal_id: id,
@@ -770,8 +800,6 @@ export function createApp(dbPath) {
       if (next !== null) {
         store.setDealState(id, next.deal.state);
         emit({ type: "STATE", dealId: id, from: next.event.from, to: next.event.to });
-        const locked = lock(ledger, deal.buyer, id, merged.price);
-        if (!locked.ok) return [400, toContractError(locked)];
         emit({ type: "ESCROW_LOCKED", dealId: id, amount: merged.price });
       }
       const current = store.getDeal(id);
@@ -998,7 +1026,7 @@ export function createApp(dbPath) {
           ok: true,
           state: null,
           allowedMoves: [],
-          result: { stats: store.dealStats(), deals: store.listDeals(), logs: traffic.slice(-50), demoSafe },
+          result: { stats: store.dealStats(), deals: store.listDeals(), logs: traffic.slice(-50), demoSafe, inspector: inspectorMode() },
         },
       ];
     },

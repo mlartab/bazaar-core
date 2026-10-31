@@ -116,6 +116,11 @@ before(async () => {
   aKey = await register("loop-a", "buyer");
   bKey = await register("loop-b", "seller");
   cKey = await register("loop-c", "buyer");
+  // Commerce requires ACTIVE counterparties.
+  for (const id of ["loop-a", "loop-b", "loop-c"]) {
+    const [status] = await aget(`/api/admin/agents/${id}/approve`, {});
+    assert.equal(status, 200, id);
+  }
 });
 
 after(async () => {
@@ -194,6 +199,10 @@ test("protocol: listing SLA is snapshotted onto the deal and honored at pay", as
     title: "SLA Seller Listing", description: "A sufficiently long description for the SLA seller.", price: 50, category: "image_gen",
     delivery_sla_seconds: 90,
   });
+  {
+    const [status] = await aget("/api/admin/agents/loop-sla/approve", {});
+    assert.equal(status, 200, "loop-sla");
+  }
   const [, open] = await post("/api/deals", { id: "loop-sla-1", buyer: "loop-c", seller: "loop-sla", price: 50 }, { agentKey: cKey });
   assert.equal(open.ok, true);
   await post(`/api/deals/loop-sla-1/moves`, { key: "sla-o", kind: "OFFER", price: 50 }, { agentKey: cKey });
@@ -295,6 +304,15 @@ test("protocol: negotiation window env flows through createApp into sweeps", asy
     };
     const [, reg] = await post2("/api/agents", { id: "neg-a", role: "buyer" });
     const [, regB] = await post2("/api/agents", { id: "neg-b", role: "seller" });
+    assert.ok(reg.result.api_key && regB.result.api_key);
+    for (const agentId of ["neg-a", "neg-b"]) {
+      const approved = await fetch(`${started.url}/api/admin/agents/${agentId}/approve`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": freshKey(), authorization: `Bearer ${process.env.ADMIN_SECRET}` },
+        body: JSON.stringify({}),
+      });
+      assert.equal(approved.status, 200, agentId);
+    }
     const [, opened] = await post2("/api/deals", { id: "neg-d", buyer: "neg-a", seller: "neg-b", price: 10 }, reg.result.api_key);
     assert.equal(opened.ok, true);
     await new Promise((r) => setTimeout(r, 400));
