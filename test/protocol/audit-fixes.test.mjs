@@ -226,3 +226,46 @@ test("audit: admin reinspect settles after seller reinstated", async () => {
     else process.env.MODEL_API_KEY = saved;
   }
 });
+
+async function pollState(dealId, agentKey, want) {
+  for (let i = 0; i < 100; i += 1) {
+    const [, d] = await get(`/api/deals/${dealId}`, agentKey);
+    if (d.state === want) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
+test("audit: GET /api/me reflects live ledger balance, not registration-time balance", async () => {
+  const saved = process.env.MODEL_API_KEY;
+  delete process.env.MODEL_API_KEY;
+  try {
+    const buyerKey = (await post("/api/agents", { id: "me-buyer", role: "buyer" }))[1].result.api_key;
+    const sellerKey = (await post("/api/agents", { id: "me-seller", role: "seller" }))[1].result.api_key;
+    await approve("me-buyer");
+    await approve("me-seller");
+    // Registration seeds zero on both sides.
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.balance, 0);
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.locked, 0);
+    // Opening funds the buyer (deposit-on-open): 0 -> 60, nothing locked.
+    assert.equal((await post("/api/deals", { id: "me-deal", buyer: "me-buyer", seller: "me-seller", price: 60 }, buyerKey))[0], 200);
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.balance, 60);
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.locked, 0);
+    // ACCEPT moves the 60 into escrow: balance back to 0, locked 60.
+    assert.equal((await post("/api/deals/me-deal/moves", { key: "k1", kind: "OFFER", price: 60 }, buyerKey))[0], 200);
+    assert.equal((await post("/api/deals/me-deal/moves", { key: "k2", kind: "ACCEPT", price: 60 }, sellerKey))[0], 200);
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.balance, 0);
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.locked, 60);
+    // Settle: escrow releases to the seller, buyer stays spent.
+    assert.equal((await post("/api/deals/me-deal/pay", {}, buyerKey))[0], 200);
+    assert.equal((await post("/api/deals/me-deal/delivery", { id: "me-del", dealId: "me-deal", deliveryUrl: "deliverable:x" }, sellerKey))[0], 202);
+    assert.equal(await pollState("me-deal", buyerKey, "SETTLED"), true, "deal settled");
+    assert.deepEqual((await get("/api/me", sellerKey))[1].result.balance, 60);
+    assert.deepEqual((await get("/api/me", sellerKey))[1].result.locked, 0);
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.balance, 0);
+    assert.deepEqual((await get("/api/me", buyerKey))[1].result.locked, 0);
+  } finally {
+    if (saved === undefined) delete process.env.MODEL_API_KEY;
+    else process.env.MODEL_API_KEY = saved;
+  }
+});

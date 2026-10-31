@@ -643,6 +643,14 @@ export function createApp(dbPath) {
         return [401, error("UNAUTHORIZED", "reading your own profile requires a valid x-agent-key header")];
       }
       const status = store.getAgentStatus(agent.id);
+      // The ledger is authoritative for money: agents.balance in SQLite is
+      // written once at registration and never updated, so it would lie.
+      // locked sums this agent's funded escrows so the caller sees both
+      // numbers it needs to reason about funding capacity.
+      const locked = Object.values(ledger.locks).reduce(
+        (sum, escrow) => sum + (escrow.agentId === agent.id ? escrow.amount : 0),
+        0,
+      );
       return [
         200,
         {
@@ -655,7 +663,8 @@ export function createApp(dbPath) {
             status: status?.status ?? null,
             status_reason: status?.status_reason ?? null,
             probation: store.getAgentProbation(agent.id) ?? 0,
-            balance: store.getAgent(agent.id)?.balance ?? null,
+            balance: ledger.balances[agent.id] ?? 0,
+            locked,
             deals: {
               open: store.countOpenDealsByParty(agent.id),
               total: store.countDealsByParty(agent.id),
