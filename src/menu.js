@@ -44,6 +44,18 @@ export const MENU = {
   },
 };
 
+// ACTIONS maps every menu entry to the concrete endpoint that executes
+// it. MENU names *what* is legal in a state; ACTIONS names *where* to send
+// it. Additive-only: allowedMoves keeps returning plain string arrays, and
+// agents cache the full map from any deal response instead of guessing URLs.
+export const ACTIONS = {
+  OFFER: { method: "POST", path: "/api/deals/:id/moves", body: "{ key, kind: 'OFFER', price }" },
+  ACCEPT: { method: "POST", path: "/api/deals/:id/moves", body: "{ key, kind: 'ACCEPT', price }" },
+  WALK: { method: "POST", path: "/api/deals/:id/moves", body: "{ key, kind: 'WALK' }" },
+  PAY: { method: "POST", path: "/api/deals/:id/pay", body: null },
+  DELIVER: { method: "POST", path: "/api/deals/:id/delivery", body: "{ id, deliveryUrl, capability? }" },
+};
+
 // allowedMoves returns a plain array, not the envelope, because it is a pure reader.
 export function allowedMoves(state, role) {
   const byRole = MENU[state];

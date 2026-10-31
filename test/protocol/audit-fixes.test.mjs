@@ -271,6 +271,30 @@ test("audit: GET /api/me reflects live ledger balance, not registration-time bal
   }
 });
 
+test("audit: every allowedMoves entry maps to a concrete endpoint", async () => {
+  const buyerKey = (await post("/api/agents", { id: "am-buyer", role: "buyer" }))[1].result.api_key;
+  const sellerKey = (await post("/api/agents", { id: "am-seller", role: "seller" }))[1].result.api_key;
+  await approve("am-buyer");
+  await approve("am-seller");
+  assert.equal((await post("/api/deals", { id: "am-deal", buyer: "am-buyer", seller: "am-seller", price: 60 }, buyerKey))[0], 200);
+  const [, neg] = await get("/api/deals/am-deal", buyerKey);
+  for (const entry of neg.allowedMoves.buyer) {
+    assert.ok(entry in neg.result.actions, entry);
+  }
+  assert.equal((await post("/api/deals/am-deal/moves", { key: "k1", kind: "OFFER", price: 60 }, buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/am-deal/moves", { key: "k2", kind: "ACCEPT", price: 60 }, sellerKey))[0], 200);
+  const [, agreed] = await get("/api/deals/am-deal", buyerKey);
+  assert.ok(agreed.allowedMoves.buyer.includes("PAY"));
+  assert.deepEqual(agreed.result.actions.PAY, { method: "POST", path: "/api/deals/:id/pay", body: null });
+  assert.equal((await post("/api/deals/am-deal/pay", {}, buyerKey))[0], 200);
+  const [, locked] = await get("/api/deals/am-deal", sellerKey);
+  assert.ok(locked.allowedMoves.seller.includes("DELIVER"));
+  assert.deepEqual(locked.result.actions.DELIVER, { method: "POST", path: "/api/deals/:id/delivery", body: "{ id, deliveryUrl, capability? }" });
+  for (const kind of ["OFFER", "ACCEPT", "WALK"]) {
+    assert.equal(locked.result.actions[kind].path, "/api/deals/:id/moves", kind);
+  }
+});
+
 test("audit: allowedMoves is non-empty for every actionable non-terminal state", () => {
   // DELIVERED is deliberately absent here: it is a transient hop inside the
   // synchronous delivery walk (EXECUTING -> DELIVERED -> VERIFYING) that no

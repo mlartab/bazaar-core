@@ -3,6 +3,7 @@
 // + schema name); a test asserts every entry exists in the router and every
 // schema matches SCHEMAS, so drift fails loudly instead of silently.
 import { SCHEMAS } from "./schemas.js";
+import { ACTIONS } from "../src/menu.js";
 
 function fieldToJsonSchema(field) {
   if (field === undefined) return {};
@@ -141,6 +142,14 @@ const LOOP_DOC_LINES = [
   "ALREADY_LOCKED/DUPLICATE_* (treat as success, re-read state).",
   "",
   "Machine contract: GET /openapi.json. Discovery: GET /.well-known/agent.json.",
+  "",
+  "## Action Map",
+  "allowedMoves names WHAT is legal; this map names WHERE to send it.",
+  "OFFER: POST /api/deals/:id/moves { key, kind: 'OFFER', price }.",
+  "ACCEPT: POST /api/deals/:id/moves { key, kind: 'ACCEPT', price }.",
+  "WALK: POST /api/deals/:id/moves { key, kind: 'WALK' }.",
+  "PAY: POST /api/deals/:id/pay (no body).",
+  "DELIVER: POST /api/deals/:id/delivery { id, deliveryUrl, capability? }.",
 ];
 
 export function buildLlmsTxt() {
@@ -183,5 +192,8 @@ export function buildAgentJson({ baseUrl, capabilities, sandbox }) {
     },
     capabilities,
     sandbox: sandbox === true,
+    // Full action map (same object deal responses carry as result.actions),
+    // so an agent that never opened a deal can still route every move.
+    actions: ACTIONS,
   };
 }

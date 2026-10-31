@@ -113,7 +113,7 @@ import { inspectorMode } from "./meta-brain.js";
 import { syncProfile, syncAgentRegistration, syncAgentStatus, syncAgentEmails } from "./supabase-sync.js";
 import { supabaseAdmin } from "./supabase.js";
 import { validate as validateReferee } from "../src/referee.js";
-import { allowedMoves } from "../src/menu.js";
+import { allowedMoves, ACTIONS } from "../src/menu.js";
 import { EDGES, transition } from "../src/deal-states.js";
 import { createLedger, deposit, lock, refund } from "../src/ledger.js";
 
@@ -850,6 +850,7 @@ export function createApp(dbPath) {
           state: current.state,
           allowedMoves: movesFor(current.state),
           ...turnContext(current, agent),
+          actions: ACTIONS,
           result: { move: { dealId: id, key: merged.key, kind: merged.kind, price: merged.price ?? null } },
         },
       ];
@@ -905,7 +906,7 @@ export function createApp(dbPath) {
       const current = store.getDeal(id);
       return [
         200,
-        { ok: true, state: current.state, allowedMoves: movesFor(current.state), ...turnContext(current, agent), result: { deal: current, receipt } },
+        { ok: true, state: current.state, allowedMoves: movesFor(current.state), ...turnContext(current, agent), actions: ACTIONS, result: { deal: current, receipt } },
         { "x-payment-proof": receipt },
       ];
     },
@@ -967,6 +968,7 @@ export function createApp(dbPath) {
           state: current.state,
           allowedMoves: movesFor(current.state),
           ...turnContext(current, agent),
+          actions: ACTIONS,
           result: { delivery: { id: merged.id, dealId: id, deliveryUrl: merged.deliveryUrl }, message: "Delivery accepted for inspection." },
         },
       ];
@@ -1012,7 +1014,7 @@ export function createApp(dbPath) {
           ...turnContext(deal, agent),
           // Live escrow for this deal, null once released or before any
           // lock: agents verify funds without correlating a second endpoint.
-          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, store.getDealRow(id)), escrow: ledger.locks[id]?.amount ?? null },
+          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, store.getDealRow(id)), escrow: ledger.locks[id]?.amount ?? null, actions: ACTIONS },
         },
       ];
     },
