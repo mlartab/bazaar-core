@@ -692,6 +692,12 @@ export function openStore(path) {
     getDelivery(id) {
       return get("SELECT id, deal_id, status, delivery_url FROM deliveries WHERE id = ?", [id]) ?? null;
     },
+    // Latest delivery recorded for a deal (reinspection re-verdicts it).
+    // Null when nothing was ever delivered — reinspect then has no input.
+    getDeliveryByDeal(dealId) {
+      if (!isValidId(dealId)) return null;
+      return get("SELECT id, deal_id, status, delivery_url FROM deliveries WHERE deal_id = ? ORDER BY rowid DESC LIMIT 1", [dealId]) ?? null;
+    },
   };
 
   return store;

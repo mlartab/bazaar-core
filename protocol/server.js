@@ -115,7 +115,7 @@ import { supabaseAdmin } from "./supabase.js";
 import { validate as validateReferee } from "../src/referee.js";
 import { allowedMoves } from "../src/menu.js";
 import { EDGES, transition } from "../src/deal-states.js";
-import { createLedger, deposit, lock } from "../src/ledger.js";
+import { createLedger, deposit, lock, refund } from "../src/ledger.js";
 
 function error(code, message) {
   return { ok: false, error: { code, message } };
@@ -162,6 +162,34 @@ function applyHelmet(req, res) {
 
 function movesFor(state) {
   return { buyer: allowedMoves(state, "buyer"), seller: allowedMoves(state, "seller") };
+}
+
+// Turn hint for agent loops: which side the caller is on, and whose action
+// the deal is waiting for. waitingOn names a role ("buyer"/"seller"),
+// "either" while both sides can move, "inspector" while the verdict is
+// pending, and "none" once terminal. Every rejection below carries this
+// alongside state/allowedMoves so an LLM can self-correct in one round trip.
+const WAITING_ON = {
+  NEGOTIATING: "either",
+  AGREED: "buyer",
+  ESCROW_LOCKED: "seller",
+  EXECUTING: "seller",
+  DELIVERED: "seller",
+  VERIFYING: "inspector",
+  SETTLED: "none",
+  REJECTED: "none",
+};
+
+function turnContext(deal, agent) {
+  const yourRole =
+    agent !== undefined && agent !== null
+      ? agent.id === deal.seller
+        ? "seller"
+        : agent.id === deal.buyer
+          ? "buyer"
+          : null
+      : null;
+  return { yourRole, waitingOn: WAITING_ON[deal.state] ?? "none" };
 }
 
 // Bounded body reader: bytes are counted per chunk so a sender cannot OOM
@@ -767,12 +795,15 @@ export function createApp(dbPath) {
         // Context-aware rejection: the agent learns the deal state, its
         // legal replies, and the exact numeric bounds in one round trip.
         const [status, payload] = stageError(ruled);
-        return [status, { ...payload, state: deal.state, allowedMoves: movesFor(deal.state) }];
+        return [status, { ...payload, state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
       let next = null;
       if (merged.kind === "ACCEPT") {
         const advanced = transition(deal, "AGREED");
-        if (!advanced.ok) return stageError(advanced);
+        if (!advanced.ok) {
+          const [status, payload] = stageError(advanced);
+          return [status, { ...payload, state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
+        }
         next = advanced;
       }
       // Lock BEFORE anything is persisted: AGREED must imply funds locked. A
@@ -783,10 +814,10 @@ export function createApp(dbPath) {
       // (the handler is synchronous to this point, so the precheck holds).
       if (next !== null) {
         if (store.listMoves(id).some((row) => row.key === merged.key)) {
-          return [409, error("DUPLICATE_MOVE", `move key ${merged.key} was already stored for deal ${id}`)];
+          return [409, { ...error("DUPLICATE_MOVE", `move key ${merged.key} was already stored for deal ${id}`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
         }
         const locked = lock(ledger, deal.buyer, id, merged.price);
-        if (!locked.ok) return [400, toContractError(locked)];
+        if (!locked.ok) return [400, { ...toContractError(locked), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
       const saved = store.saveMove({
         id: `${id}:${merged.key}`,
@@ -795,7 +826,7 @@ export function createApp(dbPath) {
         kind: merged.kind,
         price: merged.price ?? null,
       });
-      if (!saved.ok) return [409, toContractError(saved)];
+      if (!saved.ok) return [409, { ...toContractError(saved), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       emit({ type: "MOVE_RECORDED", dealId: id, key: merged.key, kind: merged.kind });
       if (next !== null) {
         store.setDealState(id, next.deal.state);
@@ -809,6 +840,7 @@ export function createApp(dbPath) {
           ok: true,
           state: current.state,
           allowedMoves: movesFor(current.state),
+          ...turnContext(current, agent),
           result: { move: { dealId: id, key: merged.key, kind: merged.kind, price: merged.price ?? null } },
         },
       ];
@@ -834,17 +866,20 @@ export function createApp(dbPath) {
         return [403, error("FORBIDDEN", `only the buyer can capture escrow for deal ${id}`)];
       }
       if (deal.state === "NEGOTIATING") {
-        return [402, { ...error("NEEDS_ACCEPTANCE", `deal ${id} has no accepted price to pay yet`), state: deal.state, allowedMoves: movesFor(deal.state) }];
+        return [402, { ...error("NEEDS_ACCEPTANCE", `deal ${id} has no accepted price to pay yet`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
       if (deal.state !== "AGREED") {
-        return [409, { ...error("ALREADY_LOCKED", `deal ${id} is ${deal.state}; its single escrow lock already happened`), state: deal.state, allowedMoves: movesFor(deal.state) }];
+        return [409, { ...error("ALREADY_LOCKED", `deal ${id} is ${deal.state}; its single escrow lock already happened`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
       if (ledger.locks[id] === undefined) {
         const locked = lock(ledger, deal.buyer, id, deal.price);
-        if (!locked.ok) return [400, toContractError(locked)];
+        if (!locked.ok) return [400, { ...toContractError(locked), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
       const advanced = transition(deal, "ESCROW_LOCKED");
-      if (!advanced.ok) return [409, toContractError(advanced)];
+      if (!advanced.ok) {
+        const [status, payload] = stageError(advanced);
+        return [status, { ...payload, state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
+      }
       store.setDealState(id, advanced.deal.state);
       // Truthful amount: the lock is authoritative, whether ACCEPT funded it
       // at a discounted price or pay just locked the full deal price. Both
@@ -861,7 +896,7 @@ export function createApp(dbPath) {
       const current = store.getDeal(id);
       return [
         200,
-        { ok: true, state: current.state, allowedMoves: movesFor(current.state), result: { deal: current, receipt } },
+        { ok: true, state: current.state, allowedMoves: movesFor(current.state), ...turnContext(current, agent), result: { deal: current, receipt } },
         { "x-payment-proof": receipt },
       ];
     },
@@ -883,14 +918,14 @@ export function createApp(dbPath) {
       // earlier) means pay has not happened yet; the old walk-in capture is
       // gone by design, so escrow always has a real ledger lock behind it.
       if (deal.state !== "ESCROW_LOCKED") {
-        return [409, error("MUST_PAY_BEFORE_DELIVERY", `deal ${id} is ${deal.state}; delivery requires a paid escrow`)];
+        return [409, { ...error("MUST_PAY_BEFORE_DELIVERY", `deal ${id} is ${deal.state}; delivery requires a paid escrow`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
       try {
         const saved = store.saveDelivery({ id: merged.id, deal_id: id, status: null, delivery_url: merged.deliveryUrl });
         if (!saved.ok) {
-          if (saved.code === "DUPLICATE_DELIVERY") return [409, toContractError(saved)];
-          if (saved.code === "BAD_ID") return [400, toContractError(saved)];
-          return [400, toContractError(saved)];
+          if (saved.code === "DUPLICATE_DELIVERY") return [409, { ...toContractError(saved), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
+          if (saved.code === "BAD_ID") return [400, { ...toContractError(saved), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
+          return [400, { ...toContractError(saved), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
         }
         // One chained walk to VERIFYING with an event per hop, so the feed
         // stays truthful about every state the deal passed through.
@@ -922,6 +957,7 @@ export function createApp(dbPath) {
           ok: true,
           state: current.state,
           allowedMoves: movesFor(current.state),
+          ...turnContext(current, agent),
           result: { delivery: { id: merged.id, dealId: id, deliveryUrl: merged.deliveryUrl }, message: "Delivery accepted for inspection." },
         },
       ];
@@ -955,7 +991,7 @@ export function createApp(dbPath) {
       ];
     },
 
-    "GET /api/deals/:id": (_body, id) => {
+    "GET /api/deals/:id": (_body, id, agent) => {
       const deal = store.getDeal(id);
       if (deal === null) return [404, error("NO_SUCH_DEAL", `no deal with id ${id}`)];
       return [
@@ -964,7 +1000,10 @@ export function createApp(dbPath) {
           ok: true,
           state: deal.state,
           allowedMoves: movesFor(deal.state),
-          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, store.getDealRow(id)) },
+          ...turnContext(deal, agent),
+          // Live escrow for this deal, null once released or before any
+          // lock: agents verify funds without correlating a second endpoint.
+          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, store.getDealRow(id)), escrow: ledger.locks[id]?.amount ?? null },
         },
       ];
     },
@@ -1135,6 +1174,53 @@ export function createApp(dbPath) {
       return [200, { ok: true, state: null, allowedMoves: [], result: store.getAgentStatus(id) }];
     },
 
+    // Frozen-settlement recovery: a VERIFYING deal whose seller lost ACTIVE
+    // standing can neither settle nor refund on its own. Force-refund
+    // returns the locked escrow to the buyer and closes the deal as
+    // operator-rejected; the seller is never paid on this path.
+    "POST /api/admin/deals/:id/force-refund": (body, id) => {
+      const deal = store.getDeal(id);
+      if (deal === null) return [404, error("NO_SUCH_DEAL", `no deal with id ${id}`)];
+      if (deal.state !== "VERIFYING") {
+        return [409, { ...error("WRONG_STATE", `deal ${id} is ${deal.state}; force-refund requires a VERIFYING deal`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, null) }];
+      }
+      const back = refund(ledger, id);
+      if (!back.ok) {
+        return [409, { ...toContractError(back), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, null) }];
+      }
+      store.setDealState(id, "REJECTED");
+      store.setDealCloseReason(id, "ADMIN_FORCE_REFUND");
+      emit({ type: "STATE", dealId: id, from: "VERIFYING", to: "REJECTED" });
+      emit({ type: "REFUNDED", dealId: id, refunded: back.refunded });
+      emit({ type: "SETTLEMENT_FROZEN_RESOLVED", dealId: id, resolution: "FORCE_REFUND" });
+      const current = store.getDeal(id);
+      return [200, { ok: true, state: current.state, allowedMoves: movesFor(current.state), ...turnContext(current, null), result: { deal: current, refunded: back.refunded, close_reason: "ADMIN_FORCE_REFUND" } }];
+    },
+
+    // Frozen-settlement recovery: re-run the inspector over the recorded
+    // delivery. Settles normally when the seller is ACTIVE again (or
+    // refunds on a negative verdict); stays frozen when the seller is
+    // still suspended, answering 409 so the operator knows why.
+    "POST /api/admin/deals/:id/reinspect": async (body, id) => {
+      const deal = store.getDeal(id);
+      if (deal === null) return [404, error("NO_SUCH_DEAL", `no deal with id ${id}`)];
+      if (deal.state !== "VERIFYING") {
+        return [409, { ...error("WRONG_STATE", `deal ${id} is ${deal.state}; reinspect requires a VERIFYING deal`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, null) }];
+      }
+      const recorded = store.getDeliveryByDeal(id);
+      if (recorded === null || typeof recorded.delivery_url !== "string") {
+        return [409, { ...error("NO_DELIVERY", `deal ${id} has no recorded delivery to reinspect`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, null) }];
+      }
+      const outcome = await runInspection({ store, ledger, dealId: id, deliveryUrl: recorded.delivery_url, capability: undefined, emit, log: logger });
+      const current = store.getDeal(id);
+      if (!outcome.ok) {
+        const status = outcome.code === "SELLER_NOT_ACTIVE" ? 409 : 500;
+        return [status, { ...error(outcome.code, outcome.message), state: current.state, allowedMoves: movesFor(current.state), ...turnContext(current, null) }];
+      }
+      emit({ type: "SETTLEMENT_FROZEN_RESOLVED", dealId: id, resolution: "REINSPECT", to: outcome.to });
+      return [200, { ok: true, state: current.state, allowedMoves: movesFor(current.state), ...turnContext(current, null), result: { deal: current, to: outcome.to } }];
+    },
+
     // Operator removal: guarded by the store (live deals refuse with 409).
     // Deal and move rows stay as audit history; only the agent row goes.
     "DELETE /api/admin/agents/:id": (_body, id) => {
@@ -1252,6 +1338,14 @@ export function createApp(dbPath) {
       const moderation = pathname.match(/^\/api\/admin\/agents\/([^/]+)\/(approve|reject|suspend|retire|graduate)$/);
       if (moderation !== null && method === "POST" && decodeURIComponent(moderation[1]) !== "") {
         return [handlers[`POST /api/admin/agents/:id/${moderation[2]}`], decodeURIComponent(moderation[1])];
+      }
+      const forceRefund = pathname.match(/^\/api\/admin\/deals\/([^/]+)\/force-refund$/);
+      if (forceRefund !== null && method === "POST" && decodeURIComponent(forceRefund[1]) !== "") {
+        return [handlers["POST /api/admin/deals/:id/force-refund"], decodeURIComponent(forceRefund[1])];
+      }
+      const reinspect = pathname.match(/^\/api\/admin\/deals\/([^/]+)\/reinspect$/);
+      if (reinspect !== null && method === "POST" && decodeURIComponent(reinspect[1]) !== "") {
+        return [handlers["POST /api/admin/deals/:id/reinspect"], decodeURIComponent(reinspect[1])];
       }
       const agentEdit = pathname.match(/^\/api\/admin\/agents\/([^/]+)$/);
       if (agentEdit !== null && (method === "PATCH" || method === "DELETE" || method === "GET") && decodeURIComponent(agentEdit[1]) !== "") {
@@ -1404,7 +1498,9 @@ export function createApp(dbPath) {
           reject(403, error("FORBIDDEN", `agent ${viewer.id} is not a party of deal ${detailId}`));
           return;
         }
-        const [detailStatus, detailPayload] = handlers["GET /api/deals/:id"](undefined, detailId);
+        // The viewer rides through so the detail can name the caller's side
+        // (yourRole) and who is waited on; admins read with a null viewer.
+        const [detailStatus, detailPayload] = handlers["GET /api/deals/:id"](undefined, detailId, viewer);
         send(detailStatus, detailPayload);
         return;
       }

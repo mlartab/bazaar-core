@@ -41,7 +41,14 @@ function connectStream() {
     return;
   }
   stream.onopen = () => setMode(true);
-  stream.onmessage = () => queueRefresh();
+  stream.onmessage = (msg) => {
+    try {
+      pushTimeline(JSON.parse(msg.data));
+    } catch {
+      // Non-JSON heartbeat: nothing to render, still refresh totals below.
+    }
+    queueRefresh();
+  };
   stream.onerror = () => {
     // Automatic fallback: close the broken stream and poll every 2 s
     // until the next successful tick reopens the stream.
@@ -227,6 +234,103 @@ function statusPill(status) {
   const cls =
     status === "ACTIVE" ? "active" : status === "PENDING" ? "pending" : status === "SUSPENDED" ? "suspended" : "rejected";
   return `<span class="pill ${cls}" data-status="${esc(status)}">${esc(status)}</span>`;
+}
+
+// Live Protocol Timeline: SSE deal events rendered as Plan -> Act ->
+// Observe blocks, newest first. Pure render from the event payload; the
+// debounced dashboard refresh behind it recomputes totals, never blocks.
+const TIMELINE_CAP = 30;
+
+function timelinePhase(e) {
+  if (e.type === "DEAL_OPENED") return "plan";
+  if (e.type === "SETTLED" || e.type === "REFUNDED") return "observe";
+  if (e.type === "STATE" && (e.to === "VERIFYING" || e.to === "SETTLED" || e.to === "REJECTED")) return "observe";
+  if (e.type === "INSPECTION_INCONCLUSIVE") return "observe";
+  return "act";
+}
+
+function timelineSteps(e) {
+  // Every block names what the agent did (Action) and what the protocol
+  // observed (Observe), so the operator reads cause and effect at a glance.
+  switch (e.type) {
+    case "DEAL_OPENED": return ["Action: OPEN", "Observe: NEGOTIATING"];
+    case "MOVE_RECORDED": return [`Action: ${e.kind ?? "MOVE"}`, "Observe: move recorded"];
+    case "ESCROW_LOCKED": return ["Action: PAY", "Observe: ESCROW_LOCKED"];
+    case "DELIVERY_RECORDED": return ["Action: DELIVER", "Observe: delivery recorded"];
+    case "SETTLED": return ["Action: INSPECT", "Observe: SETTLED — funds released"];
+    case "REFUNDED": return ["Action: INSPECT", "Observe: REJECTED — buyer refunded"];
+    case "INSPECTION_INCONCLUSIVE": return ["Action: INSPECT", "Observe: INCONCLUSIVE — escrow frozen"];
+    case "STATE": return [`Action: ${e.from ?? "?"} → ${e.to ?? "?"}`, `Observe: ${e.to ?? "?"}`];
+    default: return [`Action: ${e.type ?? "event"}`, "Observe: —"];
+  }
+}
+
+function timelineStateClass(e) {
+  const s = e.to ?? e.type;
+  if (s === "SETTLED") return "s-done";
+  if (s === "REJECTED" || e.type === "REFUNDED") return "s-rejected";
+  return "s-running";
+}
+
+function pushTimeline(e) {
+  const holder = $("timeline");
+  if (holder === null || e === null || typeof e !== "object") return;
+  const empty = $("timeline-empty");
+  if (empty !== null) empty.remove();
+  const phase = timelinePhase(e);
+  const [action, observe] = timelineSteps(e);
+  const at = typeof e.at === "number" ? new Date(e.at).toLocaleTimeString() : "";
+  const el = document.createElement("div");
+  el.className = "tl-block";
+  el.dataset.phase = phase;
+  if (typeof e.dealId === "string") el.dataset.dealId = e.dealId;
+  el.innerHTML =
+    `<span class="tl-phase tl-${phase}">${phase.toUpperCase()}</span>` +
+    `<span class="tl-main"><span class="tl-action">${esc(action)}</span><span class="tl-observe">${esc(observe)}</span></span>` +
+    (typeof e.dealId === "string" ? `<code class="tl-id">${esc(e.dealId)}</code>` : "") +
+    `<span class="tl-state ${timelineStateClass(e)}">${esc(e.to ?? e.type ?? "")}</span>` +
+    `<span class="tl-at sub">${esc(at)}</span>`;
+  holder.prepend(el);
+  while (holder.children.length > TIMELINE_CAP) holder.lastChild.remove();
+}
+
+// Verification Status (right column): inspector mode from the dashboard
+// payload, per-agent settlement rates over terminal deals, and the latest
+// terminal deals with their close reasons. All derived from data the tick
+// already fetched — no extra round trips.
+function renderVerify(result, agents, deals) {
+  const insp = $("verify-inspector");
+  if (insp !== null) {
+    const mode = result.inspector === "meta" ? "meta" : "mock";
+    insp.innerHTML = mode === "meta"
+      ? `<span class="s-running">Meta AI</span> <span class="sub">live model verdicts</span>`
+      : `<span class="s-done">Mock</span> <span class="sub">deterministic verdicts</span>`;
+  }
+  const trust = $("verify-trust");
+  if (trust !== null) {
+    const active = agents.filter((a) => a.status === "ACTIVE");
+    trust.innerHTML = active.length === 0
+      ? `<li class="sub">No active agents.</li>`
+      : active.map((a) => {
+        const terminal = deals.filter((d) => (d.buyer === a.id || d.seller === a.id) && (d.state === "SETTLED" || d.state === "REJECTED"));
+        const settled = terminal.filter((d) => d.state === "SETTLED").length;
+        const score = terminal.length === 0 ? null : Math.round((100 * settled) / terminal.length);
+        return `<li data-agent-id="${esc(a.id)}"><code>${esc(a.id)}</code> ` +
+          (score === null
+            ? `<span class="s-running">new</span> <span class="sub">no history</span>`
+            : `<span class="${score >= 80 ? "s-done" : score >= 50 ? "s-running" : "s-rejected"}">${score}%</span> <span class="sub">${settled}/${terminal.length} settled</span>`) +
+          `</li>`;
+      }).join("");
+  }
+  const verdicts = $("verify-verdicts");
+  if (verdicts !== null) {
+    const terminal = deals.filter((d) => d.state === "SETTLED" || d.state === "REJECTED").slice(-8).reverse();
+    verdicts.innerHTML = terminal.length === 0
+      ? `<li class="sub">No verdicts yet.</li>`
+      : terminal.map((d) => `<li data-deal-id="${esc(d.id)}"><code>${esc(d.id)}</code> ` +
+        `<span class="${d.state === "SETTLED" ? "s-done" : "s-rejected"}">${esc(d.state)}</span>` +
+        (typeof d.close_reason === "string" && d.close_reason !== "" ? ` <span class="sub">${esc(d.close_reason)}</span>` : "") + `</li>`).join("");
+  }
 }
 
 // Countdown for live negotiations: the sweeper rejects whatever is still
@@ -474,6 +578,7 @@ async function tick() {
     $("m-pending").textContent = pendingAgents.length;
     $("m-frozen").textContent = frozenDeals.reduce((sum, d) => sum + (Number.isInteger(d.price) ? d.price : 0), 0);
     renderAttention(pendingAgents.length, frozenDeals, rejectedDeals);
+    renderVerify(dash.result, agents, deals);
     $("net-dot").classList.remove("down");
     $("net-text").textContent = dash.result.demoSafe === true ? "Network Live · DEMO SAFE" : "Network Live";
     // A recovered transport rejoins the live stream and drops back to the
@@ -553,9 +658,64 @@ async function showDeal(id) {
     const body = await fetchJSON(`/api/deals/${encodeURIComponent(id)}`);
     setDetail("detail", body.result);
     openDrawer(`Deal ${id}`, JSON.stringify(body.result, null, 2));
+    await maybeFrozenBanner(body.result);
   } catch (err) {
     $("detail").textContent = `Failed to load ${id}: ${err.message}`;
     openDrawer(`Deal ${id}`, `Failed to load ${id}: ${err.message}`);
+  }
+}
+
+// Frozen-settlement recovery: a VERIFYING deal whose seller is not ACTIVE
+// can neither settle nor refund on its own. The banner names the cause
+// and offers the two operator resolutions, then refreshes the view.
+async function maybeFrozenBanner(result) {
+  const deal = result?.deal;
+  if (deal === undefined || deal === null || deal.state !== "VERIFYING" || typeof deal.seller !== "string") return;
+  let status = null;
+  try {
+    const seller = await fetchJSON(`/api/admin/agents/${encodeURIComponent(deal.seller)}`);
+    status = seller.result?.agent?.status ?? null;
+  } catch {
+    return;
+  }
+  if (typeof status !== "string" || status === "ACTIVE") return;
+  const node = $("detail");
+  if (node === null) return;
+  const banner = document.createElement("div");
+  banner.className = "frozen-banner";
+  banner.innerHTML =
+    `<span>⚠️ Settlement frozen — seller is ${esc(status)}. ` +
+    `<button data-frozen-reinstate="${esc(deal.seller)}" data-frozen-deal="${esc(deal.id)}">Reinstate seller</button> ` +
+    `<button data-frozen-refund="${esc(deal.id)}">Force refund</button></span>`;
+  node.insertAdjacentElement("afterbegin", banner);
+  const reinstate = banner.querySelector("[data-frozen-reinstate]");
+  if (reinstate !== null) {
+    reinstate.addEventListener("click", async () => {
+      try {
+        await decide(reinstate.dataset.frozenReinstate, "approve", undefined);
+        toast(`Seller ${reinstate.dataset.frozenReinstate} reinstated. Reinspect the deal to settle.`, "success");
+        await showDeal(reinstate.dataset.frozenDeal);
+      } catch (err) {
+        toast(`Reinstate failed: ${err.code ?? err.message}`, "error");
+      }
+    });
+  }
+  const refundBtn = banner.querySelector("[data-frozen-refund]");
+  if (refundBtn !== null) {
+    refundBtn.addEventListener("click", async () => {
+      try {
+        await adminFetch(`/api/admin/deals/${encodeURIComponent(refundBtn.dataset.frozenRefund)}/force-refund`, {
+          method: "POST",
+          body: {},
+          idempotency: true,
+        });
+        toast(`Deal ${refundBtn.dataset.frozenRefund} force-refunded to the buyer.`, "success");
+        tick();
+        await showDeal(refundBtn.dataset.frozenRefund);
+      } catch (err) {
+        toast(`Force refund failed: ${err.code ?? err.message}`, "error");
+      }
+    });
   }
 }
 

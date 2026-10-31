@@ -15,11 +15,12 @@ const ALL_STATES = [
   "REJECTED",
 ];
 
-test("deal-states: NEGOTIATING can reach AGREED and nothing else forward", () => {
+test("deal-states: NEGOTIATING can reach AGREED and REJECTED, nothing else", () => {
   const ok = transition(deal("NEGOTIATING"), "AGREED");
   assert.equal(ok.ok, true);
   assert.equal(ok.deal.state, "AGREED");
-  for (const to of ALL_STATES.filter((s) => s !== "AGREED")) {
+  assert.equal(transition(deal("NEGOTIATING"), "REJECTED").ok, true);
+  for (const to of ALL_STATES.filter((s) => s !== "AGREED" && s !== "REJECTED")) {
     const result = transition(deal("NEGOTIATING"), to);
     assert.equal(result.ok, false, to);
     assert.equal(result.code, "ILLEGAL_TRANSITION", to);
@@ -42,13 +43,17 @@ test("deal-states: every state in the happy path can reach the next one", () => 
   }
 });
 
-test("deal-states: REJECTED is reachable only from VERIFYING", () => {
-  for (const from of ALL_STATES.filter((s) => s !== "VERIFYING")) {
+test("deal-states: REJECTED is reachable from every live state", () => {
+  for (const from of ["NEGOTIATING", "AGREED", "ESCROW_LOCKED", "VERIFYING"]) {
+    const result = transition(deal(from), "REJECTED");
+    assert.equal(result.ok, true, from);
+    assert.equal(result.deal.state, "REJECTED", from);
+  }
+  for (const from of ["SETTLED", "REJECTED"]) {
     const result = transition(deal(from), "REJECTED");
     assert.equal(result.ok, false, from);
     assert.equal(result.code, "ILLEGAL_TRANSITION", from);
   }
-  assert.equal(transition(deal("VERIFYING"), "REJECTED").ok, true);
 });
 
 test("deal-states: SETTLED and REJECTED are terminal", () => {

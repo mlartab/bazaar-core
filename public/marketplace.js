@@ -49,13 +49,76 @@ function priceTag(price) {
   return `<span class="price-tag missing">Price on request</span>`;
 }
 
-// Two-step Hire wizard. Review collects the brief beside the price;
-// Confirm runs the buyer side of one deal: open, OFFER, ACCEPT, pay. The
-// opening deposit funds web-buyer, so the browser never handles keys or
-// balances; every POST carries a fresh Idempotency-Key.
-let wizard = null;
+// Hire flow: a buyer hiring a seller opens a DEAL, never a listing edit.
+// The form collects the brief (prompt) and the budget, then POSTs
+// /api/deals with the brief as deal metadata. No Idempotency-Key header
+// is sent: the protocol auto-generates a deterministic key, so a retry
+// replays instead of double-opening.
+let hireSeller = null;
 
-const quoteFor = (price) => Math.round(price * 1.2);
+function toast(message) {
+  let el = document.getElementById("hire-toast");
+  if (el === null) {
+    el = document.createElement("div");
+    el.id = "hire-toast";
+    el.setAttribute("role", "status");
+    el.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 16px;border-radius:8px;z-index:9999;max-width:90vw;";
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.hidden = false;
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => {
+    el.hidden = true;
+  }, 4000);
+}
+
+function hire(id, price) {
+  hireSeller = { id, budget: Number.isInteger(price) ? price : "" };
+  setModal(
+    "",
+    1,
+    `Hire ${esc(hireSeller.id)}`,
+    `<label>What do you need done?<br /><textarea id="hire-prompt" class="input" rows="4" placeholder="Describe the task..."></textarea></label>` +
+      `<label>How much are you willing to pay? (CR)<br /><input id="hire-budget" class="input" type="number" min="1" step="1" inputmode="numeric" value="${hireSeller.budget}" /></label>`,
+    [
+      { label: "Cancel", kind: "ghost", onClick: () => { $("modal").hidden = true; } },
+      { label: "Open deal", onClick: submitHire },
+    ],
+  );
+}
+
+async function submitHire() {
+  const promptEl = $("hire-prompt");
+  const budgetEl = $("hire-budget");
+  const prompt = promptEl !== null ? promptEl.value.trim() : "";
+  const budget = budgetEl !== null ? Number(budgetEl.value) : NaN;
+  if (prompt === "") {
+    toast("Please describe what you need done.");
+    return;
+  }
+  if (!Number.isInteger(budget) || budget < 1) {
+    toast("Budget must be a positive whole number of CR.");
+    return;
+  }
+  try {
+    const buyer = await ensureBuyer();
+    // No Idempotency-Key header: the protocol auto-generates one, so a
+    // double-click retries safely. Every call carries the provisioned
+    // buyer key: anonymous hires die at 401.
+    await apiPost(
+      "/api/deals",
+      { buyer: buyer.id, seller: hireSeller.id, price: budget, metadata: { prompt } },
+      buyer.key,
+      { idempotency: false },
+    );
+    $("modal").hidden = true;
+    hireSeller = null;
+    toast("Deal opened! Negotiation started.");
+  } catch (err) {
+    toast(err.message ?? String(err));
+  }
+}
 
 function setModal(stepText, stepNum, title, bodyHTML, actions) {
   $("hire-step").textContent = stepText;
@@ -80,8 +143,12 @@ function modalFail(title, err) {
   setModal("", 0, title, `<p>${esc(err.message ?? String(err))}</p>`, []);
 }
 
-async function apiPost(path, body, agentKey) {
-  const headers = { "content-type": "application/json", "idempotency-key": crypto.randomUUID() };
+async function apiPost(path, body, agentKey, { idempotency = true } = {}) {
+  const headers = { "content-type": "application/json" };
+  // The protocol auto-generates a deterministic key when the header is
+  // missing, so callers that pass { idempotency: false } stay retry-safe
+  // without touching HTTP plumbing.
+  if (idempotency) headers["idempotency-key"] = crypto.randomUUID();
   if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
   const res = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
   const data = await res.json();
@@ -119,40 +186,7 @@ async function ensureBuyer() {
   return identity;
 }
 
-function hire(id, price) {
-  if (!Number.isInteger(price) || quoteFor(price) < 1) {
-    setModal("", 0, "Hire Agent", `<p>This listing has no payable price yet.</p>`, []);
-    return;
-  }
-  // Margin is derived once, beside the total, so the itemized quote can
-  // never drift from the amount the deal actually escrows.
-  wizard = { id, price, margin: quoteFor(price) - price, quote: quoteFor(price), brief: "" };
-  stepReview();
-}
 
-function stepReview() {
-  setModal(
-    "Step 1 of 2 — Review",
-    1,
-    `Hire ${esc(wizard.id)}`,
-    `<label>What do you need?<br /><textarea id="brief" class="input" rows="3">${esc(wizard.brief)}</textarea></label>` +
-      `<div class="quote" data-agent-id="${esc(wizard.id)}" data-price="${wizard.price}" data-quote="${wizard.quote}">` +
-      `<div class="qrow"><span>Listing Price</span><span data-price="${wizard.price}">${wizard.price} CR</span></div>` +
-      `<div class="qrow"><span>Negotiation Margin (20%)</span><span>${wizard.margin} CR</span></div>` +
-      `<div class="qrow total"><span>Total Due</span><span data-quote="${wizard.quote}">${wizard.quote} CR</span></div>` +
-      `</div>` +
-      `<p class="reclaim">Your ${wizard.quote} CR locks in escrow and releases only on verified delivery — rejections refund automatically.</p>` +
-      (wizard.brief === "" ? "" : `<p>Brief: ${esc(wizard.brief)}</p>`),
-    [{ label: "Continue to payment", onClick: () => {
-      const el = $("brief");
-      wizard.brief = el !== null ? el.value.trim() : "";
-      stepConfirm();
-    } }],
-  );
-}
-
-// Deterministic display-only reputation: hash the agent id into 1-5 bars.
-// Labeled beta in the UI; it never implies server-side scoring.
 function trustScore(id) {
   let h = 0;
   for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
@@ -171,105 +205,9 @@ function trustRow(id) {
 // Each row owns a stable id so flips target the row, never a re-render:
 // no timers anywhere — a check lights only when its request resolves.
 // Done rows print a green [OK] prefix like a system boot sequence.
-function checkRow(id, label) {
-  return `<div class="check" id="${id}" data-state="pending" data-step="${esc(label)}"><span class="box"></span><span class="check-label">${label}</span><span class="check-err"></span></div>`;
-}
 
-function setCheck(id, state, err) {
-  const row = $(id);
-  if (row === null) return;
-  row.dataset.state = state;
-  const label = row.querySelector(".check-label");
-  if (state === "done" && label !== null && label.querySelector(".ok-tag") === null) {
-    label.innerHTML = `<span class="ok-tag">[OK]</span> ${esc(label.textContent)}`;
-  }
-  if (err !== undefined) row.querySelector(".check-err").textContent = err;
-}
 
-// Swept quotes surface as lock errors on pay: translate the machine code
-// into the one sentence the buyer needs.
-function friendlyPayError(err) {
-  const message = String(err?.message ?? err);
-  if (message.includes("ALREADY_LOCKED") || message.includes("NEEDS_ACCEPTANCE")) {
-    return "This quote expired before capture. Please start a new hire.";
-  }
-  return message;
-}
 
-async function copyReceipt() {
-  const btn = $("copy-receipt");
-  const code = $("receipt");
-  const text = code.dataset.full ?? code.textContent;
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    // Non-secure origins reject the clipboard API: select the receipt so
-    // the buyer can copy it manually instead of failing silently.
-    const range = document.createRange();
-    range.selectNodeContents(code);
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-    btn.textContent = "Select + Ctrl+C";
-    return;
-  }
-  btn.textContent = "Copied";
-}
-
-async function stepConfirm() {
-  setModal(
-    "Step 2 of 2 — Confirm",
-    2,
-    "Running the x402 handshake…",
-    `<div class="boot">` + checkRow("ck-offer", "Offer recorded") + checkRow("ck-accept", "Price accepted") + checkRow("ck-escrow", "Escrow locked + receipt") + `</div>`,
-    [{ label: "Back", kind: "ghost", onClick: stepReview }],
-  );
-  try {
-    const buyer = await ensureBuyer();
-    const dealId = `deal-${Date.now()}`;
-    // Open at the quote so the deposit covers it; offer at the listing
-    // price and accept at the quote — matching prices trip the referee's
-    // duplicate-offer rule, and a higher accept would exceed the budget.
-    // Every call carries the provisioned buyer key: anonymous hires die at 401.
-    setCheck("ck-offer", "active");
-    await apiPost("/api/deals", { id: dealId, buyer: buyer.id, seller: wizard.id, price: wizard.quote }, buyer.key);
-    await apiPost(`/api/deals/${encodeURIComponent(dealId)}/moves`, { key: "offer", kind: "OFFER", price: wizard.price }, buyer.key);
-    setCheck("ck-offer", "done");
-    setCheck("ck-accept", "active");
-    await apiPost(`/api/deals/${encodeURIComponent(dealId)}/moves`, { key: "accept", kind: "ACCEPT", price: wizard.quote }, buyer.key);
-    setCheck("ck-accept", "done");
-    setCheck("ck-escrow", "active");
-    const paid = await apiPost(`/api/deals/${encodeURIComponent(dealId)}/pay`, {}, buyer.key);
-    setCheck("ck-escrow", "done");
-    const receipt = paid.result.receipt;
-    setModal(
-      "Done",
-      2,
-      "Payment Successful. Funds in Escrow.",
-      `<p data-deal-id="${esc(dealId)}" data-state="ESCROW_LOCKED">Deal <strong>${esc(dealId)}</strong> is ESCROW_LOCKED.</p>` +
-        `<p><code class="receipt" id="receipt" data-full="${esc(receipt)}" title="${esc(receipt)}">${esc(receipt)}</code> <button class="btn" id="copy-receipt">Copy</button></p>` +
-        `<p class="sub">Track it in the Admin Console deals table.</p>`,
-      [],
-    );
-    $("copy-receipt").addEventListener("click", copyReceipt);
-  } catch (err) {
-    // Freeze on the failed row; a row is only ever marked by its own
-    // request's outcome, so the buyer sees exactly where capture stopped.
-    const message = friendlyPayError(err);
-    const active = document.querySelector(".check[data-state='active']");
-    if (active !== null) {
-      setCheck(active.id, "failed", message);
-      $("modal-title").textContent = "Payment failed";
-    } else {
-      modalFail("Payment failed", err);
-    }
-  }
-}
-
-// Filter state: skill and strategy narrow server-side (token-efficient
-// discovery); category, search, and sort stay client-side on the result.
-const filters = { query: "", category: "", sort: "featured", service_type: "", skill: "" };
-let allAgents = [];
 
 function discoveryQuery() {
   const params = new URLSearchParams();
@@ -493,7 +431,7 @@ $("market-skill").addEventListener("input", (e) => {
 
 $("modal-close").addEventListener("click", () => {
   $("modal").hidden = true;
-  wizard = null;
+  hireSeller = null;
 });
 
 load();

@@ -9,6 +9,16 @@
 // sleeping through real timeouts.
 
 import { refund } from "../src/ledger.js";
+import { transition } from "../src/deal-states.js";
+
+// Every rejection below walks through the state machine first: a sweep
+// that the machine forbids records an error outcome instead of silently
+// writing a row the machine says is unreachable.
+function rejectDeal(store, deal) {
+  const advanced = transition({ state: deal.state }, "REJECTED");
+  if (!advanced.ok) throw new Error(advanced.message);
+  store.setDealState(deal.id, "REJECTED");
+}
 import { DELIVERY_SWEEP_INTERVAL_MS, DELIVERY_TIMEOUT_MS, INSPECTION_SWEEP_INTERVAL_MS, INSPECTION_TIMEOUT_MS, SESSION_TIMEOUT_MS, SWEEP_INTERVAL_MS } from "./config.js";
 
 export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIMEOUT_MS, intervalMs = SWEEP_INTERVAL_MS, deliveryExpiresInMs = DELIVERY_TIMEOUT_MS, deliveryIntervalMs = DELIVERY_SWEEP_INTERVAL_MS, inspectionExpiresInMs = INSPECTION_TIMEOUT_MS, inspectionIntervalMs = INSPECTION_SWEEP_INTERVAL_MS, demoSafe = false, now = () => Date.now() } = {}) {
@@ -39,7 +49,7 @@ export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIME
             refunded = true;
           }
         }
-        store.setDealState(deal.id, "REJECTED");
+        rejectDeal(store, deal);
         store.setDealCloseReason(deal.id, "EXPIRED_TIMEOUT");
         outcomes.push({ id: deal.id, from: deal.state, to: "REJECTED", refunded });
       } catch (err) {
@@ -59,7 +69,7 @@ export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIME
       try {
         const back = refund(ledger, deal.id);
         if (!back.ok) throw new Error(back.message);
-        store.setDealState(deal.id, "REJECTED");
+        rejectDeal(store, deal);
         store.setDealCloseReason(deal.id, "DELIVERY_TIMEOUT");
         outcomes.push({ id: deal.id, from: deal.state, to: "REJECTED", refunded: true });
       } catch (err) {
@@ -78,7 +88,7 @@ export function createSessionManager({ store, ledger, expiresInMs = SESSION_TIME
       try {
         const back = refund(ledger, deal.id);
         if (!back.ok) throw new Error(back.message);
-        store.setDealState(deal.id, "REJECTED");
+        rejectDeal(store, deal);
         store.setDealCloseReason(deal.id, "INSPECTION_TIMEOUT");
         outcomes.push({ id: deal.id, from: deal.state, to: "REJECTED", refunded: true, reason: "INSPECTION_TIMEOUT" });
       } catch (err) {

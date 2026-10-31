@@ -23,8 +23,29 @@
       <button class="navlink" data-view="ledger">Ledger</button>
       <button class="navlink" data-view="events">Events</button>
       <button class="navlink" data-view="settings">Settings</button>
+      <div class="tools-panel" aria-label="Protocol tools">
+        <h2>Protocol Tools</h2>
+        <ul>
+          <li data-method="GET" data-path="/api/agents"><span class="m-get">GET</span><code>/api/agents</code></li>
+          <li data-method="POST" data-path="/api/deals"><span class="m-post">POST</span><code>/api/deals</code></li>
+          <li data-method="POST" data-path="/api/deals/:id/moves"><span class="m-post">POST</span><code>/api/deals/:id/moves</code></li>
+          <li data-method="POST" data-path="/api/deals/:id/pay"><span class="m-post">POST</span><code>/api/deals/:id/pay</code></li>
+          <li data-method="POST" data-path="/api/deals/:id/delivery"><span class="m-post">POST</span><code>/api/deals/:id/delivery</code></li>
+          <li data-method="GET" data-path="/api/deals/:id"><span class="m-get">GET</span><code>/api/deals/:id</code></li>
+          <li data-method="GET" data-path="/api/events"><span class="m-get">GET</span><code>/api/events</code></li>
+          <li data-method="GET" data-path="/openapi.json"><span class="m-get">GET</span><code>/openapi.json</code></li>
+          <li data-method="GET" data-path="/llms.txt"><span class="m-get">GET</span><code>/llms.txt</code></li>
+        </ul>
+      </div>
     </aside>
     <main>
+      <section class="card" id="timeline-card" aria-label="Live protocol timeline">
+        <div class="card-head">
+          <h2 title="Live SSE deal events rendered as Plan -> Act -> Observe blocks">Live Protocol Timeline</h2>
+          <span class="sub">Plan → Act → Observe</span>
+        </div>
+        <div id="timeline"><p class="sub" id="timeline-empty">Waiting for live deal events…</p></div>
+      </section>
       <section id="view-overview">
         <div class="card attention" aria-label="Needs attention">
           <h2>Needs attention</h2>
@@ -257,6 +278,20 @@
         <pre id="drawer-body"></pre>
       </aside>
     </main>
+    <aside class="verify" aria-label="Verification status">
+      <div class="card" aria-label="Inspector state">
+        <h2 title="Mock verdicts when keyless, Meta Model API when MODEL_API_KEY is set">Inspector</h2>
+        <div id="verify-inspector"><span class="sub">Loading…</span></div>
+      </div>
+      <div class="card" aria-label="Agent trust scores">
+        <h2 title="Settlement rate over each active agent's terminal deals">Trust Scores</h2>
+        <ul id="verify-trust" class="verify-list"><li class="sub">Loading…</li></ul>
+      </div>
+      <div class="card" aria-label="Recent inspection verdicts">
+        <h2 title="Latest terminal deals with their close reasons">Recent Verdicts</h2>
+        <ul id="verify-verdicts" class="verify-list"><li class="sub">Loading…</li></ul>
+      </div>
+    </aside>
   </div>
   <script src="/app.js"></script>
   <footer class="site-footer">

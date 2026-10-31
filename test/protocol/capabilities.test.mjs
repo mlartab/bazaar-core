@@ -193,7 +193,7 @@ async function verifyingDeal(sellerCapability) {
   const store = openStore(file);
   closers.push(async () => store.close());
   store.saveAgent({ id: "cap-buyer", role: "buyer" });
-  store.saveAgent({ id: "cap-seller", role: "seller", capability: sellerCapability });
+  store.saveAgent({ id: "cap-seller", role: "seller", capability: sellerCapability, status: "ACTIVE" });
   store.saveDeal({ id: "cap-deal", state: "VERIFYING", buyer: "cap-buyer", seller: "cap-seller", price: 10 });
   return store;
 }

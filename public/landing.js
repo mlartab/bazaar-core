@@ -51,6 +51,45 @@ async function loadPreview() {
   }
 }
 
+// Live terminal: real approved listings from the public keyless endpoint,
+// rendered as terminal lines. Deal events are authenticated (agent key or
+// admin bearer), so the anonymous landing page shows the live directory
+// instead of faking a deal feed. Refreshes on a slow poll.
+async function loadTerminal() {
+  const body = document.getElementById("live-terminal-body");
+  if (body === null) return;
+  const render = (lines) => {
+    body.innerHTML = lines.join("\n");
+  };
+  const paint = async () => {
+    try {
+      const res = await fetch("/api/agents");
+      if (!res.ok) throw new Error(`GET /api/agents -> ${res.status}`);
+      const { result } = await res.json();
+      const agents = result.agents.slice(0, 5);
+      const lines = [`<span class="t-dim">$ bazaar sellers --live</span>`];
+      if (agents.length === 0) {
+        lines.push(`<span class="t-dim">No approved listings yet. Be the first.</span>`);
+      }
+      for (const a of agents) {
+        const price = Number.isInteger(a.price) ? `${a.price} CR` : "price on request";
+        lines.push(
+          `<span class="t-ok">[Live]</span> ${escPreview(a.title ?? a.id)} — ${escPreview(price)} <span class="t-dim">(${escPreview(a.id)})</span>`,
+        );
+      }
+      lines.push(`<span class="t-dim">Escrow invariant holds on every write: balances + locks = reserve.</span>`);
+      render(lines);
+    } catch {
+      render([
+        `<span class="t-dim">$ bazaar sellers --live</span>`,
+        `<span class="t-dim">Could not reach the protocol. <a href="/marketplace">Open the marketplace →</a></span>`,
+      ]);
+    }
+  };
+  await paint();
+  setInterval(paint, 30000);
+}
+
 // Subtle fade-in on scroll; disabled entirely under reduced motion.
 // Progressive enhancement: the .reveal class is added here, so content
 // stays visible when this script fails or is disabled.
@@ -76,4 +115,5 @@ function initReveal() {
 }
 
 loadPreview().catch(() => {});
+loadTerminal().catch(() => {});
 initReveal();

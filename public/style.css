@@ -684,6 +684,18 @@ body.seller .agent-card { border-top-color: var(--green); }
   padding: 10px 14px;
   margin-top: 10px;
 }
+/* Frozen settlement: same banner shape as .verify-banner, amber warning
+   tones. Buttons inherit the console button styles. */
+.frozen-banner {
+  border: 1px solid var(--amber);
+  background: var(--amber-dim);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  margin-bottom: 10px;
+}
+.frozen-banner button {
+  margin-left: 8px;
+}
 
 /* Marketplace: header band, sticky toolbar, and a high-contrast pill
    Hire action in Meta Blue. */
@@ -964,6 +976,154 @@ body.seller #new-listing-btn { background: var(--indigo); }
   .reveal { opacity: 1; transition: none; }
 }
 
+/* Meta landing refresh: design tokens, hero, bento grid, live terminal,
+   and trust section. Scoped to body.landing so the consoles are untouched. */
+:root {
+  --meta-blue: #0064E0;
+  --meta-dark: #1C2B33;
+  --meta-text: #1C2B33;
+  --meta-text-muted: #5D6C7B;
+  --meta-bg-light: #F1F4F7;
+  --meta-bg-blue: #E8F3FF;
+  --meta-border: #DEE3E9;
+}
+
+body.landing {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  color: var(--meta-text);
+}
+
+/* Full-width centered hero over a soft Meta-blue radial wash. */
+.meta-hero {
+  text-align: center;
+  padding: 96px 20px 80px;
+  background: radial-gradient(ellipse 80% 70% at 50% 30%, var(--meta-bg-blue) 0%, #ffffff 70%);
+}
+.meta-eyebrow {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--meta-blue);
+  margin-bottom: 16px;
+}
+.meta-hero h1 {
+  font-size: 3.5rem;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 auto 20px;
+  max-width: 16ch;
+  color: var(--meta-text);
+}
+.meta-sub {
+  font-size: 1.25rem;
+  line-height: 1.5;
+  color: var(--meta-text-muted);
+  max-width: 44ch;
+  margin: 0 auto 36px;
+}
+.meta-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.btn-outline {
+  background: transparent;
+  color: var(--meta-blue);
+  border: 2px solid var(--meta-blue);
+  border-radius: 100px;
+  padding: 8px 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.meta-cta .btn { border-radius: 100px; }
+
+/* Bento features grid: three rounded cards on light grey. */
+.bento-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.bento-card {
+  border-radius: 24px;
+  background: #F1F4F7;
+  border: 1px solid #DEE3E9;
+  padding: 32px;
+}
+.bento-card svg { margin-bottom: 16px; }
+.bento-card h3 { font-size: 1.25rem; font-weight: 600; margin: 0 0 12px; color: var(--meta-text); }
+.bento-card p { margin: 0; color: var(--meta-text-muted); line-height: 1.6; }
+.bento-head { text-align: center; margin-bottom: 32px; }
+.bento-head h2 {
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  color: var(--meta-text);
+}
+.bento-head p { color: var(--meta-text-muted); margin: 0; }
+
+/* Live terminal: premium dark-mode code block in a rounded container. */
+.live-terminal-section { max-width: 880px; margin-left: auto; margin-right: auto; }
+.live-terminal {
+  background: #1C2B33;
+  border-radius: 16px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+.live-terminal-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.live-terminal-bar i { width: 12px; height: 12px; border-radius: 50%; }
+.live-terminal-bar i:nth-child(1) { background: #ff5f57; }
+.live-terminal-bar i:nth-child(2) { background: #febc2e; }
+.live-terminal-bar i:nth-child(3) { background: #28c840; }
+.live-terminal-bar span { margin-left: 8px; color: rgba(255, 255, 255, 0.6); font-family: monospace; font-size: 12px; }
+.live-terminal-body {
+  margin: 0;
+  padding: 20px 24px 24px;
+  color: #FFFFFF;
+  font-family: monospace;
+  font-size: 13px;
+  line-height: 1.8;
+  overflow-x: auto;
+  background: transparent;
+  border: 0;
+  max-height: none;
+}
+.live-terminal-body .t-dim { color: rgba(255, 255, 255, 0.55); }
+.live-terminal-body .t-ok { color: #4ade80; font-weight: 700; }
+.live-terminal-body a { color: #7dd3fc; }
+
+/* Trust and security band on baby blue. */
+.trust-section { background: #E8F3FF; border-radius: 24px; padding: 56px 40px; text-align: center; }
+.trust-section h2 {
+  font-size: 2rem;
+  font-weight: 600;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  margin: 0 0 32px;
+  color: var(--meta-text);
+}
+.trust-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; text-align: left; }
+.trust-col { display: flex; gap: 12px; align-items: flex-start; }
+.trust-col svg { flex: none; margin-top: 2px; }
+.trust-col h3 { font-size: 1.125rem; font-weight: 600; margin: 0 0 8px; color: var(--meta-text); }
+.trust-col p { margin: 0; color: var(--meta-text-muted); line-height: 1.6; }
+
+@media (max-width: 1024px) {
+  .bento-grid { grid-template-columns: 1fr; }
+  .trust-cols { grid-template-columns: 1fr; }
+  .meta-hero h1 { font-size: 2.5rem; }
+  .trust-section { padding: 40px 24px; }
+}
+@media (max-width: 640px) {
+  .meta-hero { padding: 64px 20px 56px; }
+  .meta-hero h1 { font-size: 2rem; }
+  .meta-cta { flex-direction: column; align-items: stretch; }
+  .meta-cta a { display: flex; }
+  .meta-cta .btn, .meta-cta .btn-outline { width: 100%; }
+}
+
 /* Admin console: attention list, table upgrades, drawer, log, density. */
 .attention { margin-bottom: var(--space-4); background: var(--amber-dim); }
 .attention h2 { color: var(--ink); }
@@ -1137,3 +1297,76 @@ body[data-density="compact"] #log { height: 300px; }
   .toast { transition: none; }
   .table tbody tr { transition: none; }
 }
+
+/* Admin Console 3-column grid: 270px nav+tools | fluid center | 380px verify.
+   Center holds the live timeline above the existing views; the right rail
+   holds verification status. Single column below 1200px. */
+.shell {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr) 380px;
+  align-items: start;
+}
+.shell .sidebar { flex: none; width: auto; }
+.shell main { flex: none; min-width: 0; }
+.verify { display: grid; gap: 12px; align-content: start; position: sticky; top: 12px; }
+@media (max-width: 1200px) {
+  .shell { grid-template-columns: 1fr; }
+  .sidebar, .verify { position: static; }
+}
+
+/* Protocol Tools panel: Meta-style tool list in the left rail. */
+.tools-panel { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.tools-panel h2 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.06em; }
+.tools-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.tools-panel li { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.tools-panel code { font-size: 11px; word-break: break-all; }
+
+/* HTTP method tags, shared by the log, tools panel, and timeline. */
+.m-get, .m-post { font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: var(--radius-pill); }
+.m-get { background: var(--green-dim); color: var(--green); }
+.m-post { background: var(--blue-dim); color: var(--blue); }
+
+/* Meta console status badges: running = in flight, done = settled/valid,
+   rejected = failed or refunded. Flat pastel pills, mono type. */
+.s-running, .s-done, .s-rejected {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--mono);
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+.s-running { background: var(--blue-dim); color: var(--blue); }
+.s-done { background: var(--green-dim); color: var(--green); }
+.s-rejected { background: var(--red-dim); color: var(--red); }
+
+/* Live Protocol Timeline: one block per SSE deal event. Phase tag first,
+   then the Action/Observe pair, then deal id, state badge, and time. */
+#timeline-card { margin-bottom: 12px; }
+#timeline { display: grid; gap: 8px; max-height: 420px; overflow-y: auto; }
+.tl-block {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+.tl-phase { font-family: var(--mono); font-size: 10px; font-weight: 700; letter-spacing: 0.06em; padding: 1px 8px; border-radius: var(--radius-pill); }
+.tl-plan { background: var(--amber-dim); color: var(--amber); }
+.tl-act { background: var(--blue-dim); color: var(--blue); }
+.tl-observe { background: var(--cyan-dim); color: var(--cyan); }
+.tl-main { display: grid; gap: 2px; flex: 1 1 220px; min-width: 0; }
+.tl-action { font-weight: 700; font-size: 13px; }
+.tl-observe { color: var(--ink-2); font-size: 12px; }
+.tl-id { font-size: 11px; color: var(--ink-2); }
+.tl-at { margin-left: auto; }
+
+/* Verification Status rail: plain rows, no nesting. */
+.verify-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
+.verify-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.verify-list code { font-size: 12px; }

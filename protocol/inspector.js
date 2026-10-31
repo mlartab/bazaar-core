@@ -192,6 +192,19 @@ export async function runInspection({ store, ledger, dealId, deliveryUrl, capabi
   // VERIFYING (fail-frozen) instead of certifying a terminal state whose
   // funds never moved.
   if (verdict === "SETTLED") {
+    // Moderation freeze (P1-3): a seller who lost ACTIVE standing since
+    // delivery must not be paid. The deal stays VERIFYING with the escrow
+    // locked — the same fail-frozen posture as an inconclusive verdict —
+    // so an operator can reinstate, retire, or refund deliberately. A
+    // REJECTED verdict still refunds the buyer below: returning money is
+    // always safe. Unknown sellers (pre-lifecycle rows) keep the old
+    // behavior; only a known non-ACTIVE status freezes.
+    const standing = store.getAgentStatus?.(deal.seller)?.status;
+    if (typeof standing === "string" && standing !== "ACTIVE") {
+      (log ?? console).warn?.({ dealId, seller: deal.seller, standing }, "inspector.seller_not_active");
+      emit?.({ type: "SETTLEMENT_FROZEN", dealId, seller: deal.seller, standing });
+      return { ok: false, code: "SELLER_NOT_ACTIVE", message: `seller ${deal.seller} is ${standing}; settlement frozen` };
+    }
     const paid = settle(ledger, dealId, deal.seller);
     if (!paid.ok) {
       (log ?? console).error?.({ dealId, code: paid.code }, "inspector.settle_failed");
