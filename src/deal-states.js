@@ -4,9 +4,13 @@
 // and mutable so later bricks (and scale tests) can extend it at runtime.
 // SETTLED and REJECTED are terminal: they map to no outgoing edges.
 export const EDGES = {
-  NEGOTIATING: ["AGREED"],
-  AGREED: ["ESCROW_LOCKED"],
-  ESCROW_LOCKED: ["EXECUTING"],
+  // REJECTED rides every live state: the sweeper expires NEGOTIATING and
+  // AGREED deals, refunds stale ESCROW_LOCKED captures, and unfreezes
+  // VERIFYING ones — all through transition(), so the machine stays the
+  // single source of truth for every legal move.
+  NEGOTIATING: ["AGREED", "REJECTED"],
+  AGREED: ["ESCROW_LOCKED", "REJECTED"],
+  ESCROW_LOCKED: ["EXECUTING", "REJECTED"],
   EXECUTING: ["DELIVERED"],
   DELIVERED: ["VERIFYING"],
   VERIFYING: ["SETTLED", "REJECTED"],

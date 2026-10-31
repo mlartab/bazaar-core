@@ -6,6 +6,7 @@ import path from "node:path";
 import { openStore } from "../../protocol/db.js";
 import { createLedger } from "../../src/ledger.js";
 import { transition } from "../../src/deal-states.js";
+import { allowedMoves } from "../../src/menu.js";
 import { startServer } from "../../protocol/server.js";
 import { runInspection } from "../../protocol/inspector.js";
 
@@ -267,5 +268,19 @@ test("audit: GET /api/me reflects live ledger balance, not registration-time bal
   } finally {
     if (saved === undefined) delete process.env.MODEL_API_KEY;
     else process.env.MODEL_API_KEY = saved;
+  }
+});
+
+test("audit: allowedMoves is non-empty for every actionable non-terminal state", () => {
+  // DELIVERED is deliberately absent here: it is a transient hop inside the
+  // synchronous delivery walk (EXECUTING -> DELIVERED -> VERIFYING) that no
+  // client can ever observe, so any entry for it would be unreachable.
+  for (const state of ["AGREED", "ESCROW_LOCKED", "EXECUTING"]) {
+    const total = allowedMoves(state, "buyer").length + allowedMoves(state, "seller").length;
+    assert.ok(total > 0, state);
+  }
+  for (const state of ["DELIVERED", "VERIFYING", "SETTLED", "REJECTED"]) {
+    assert.deepEqual(allowedMoves(state, "buyer"), [], state);
+    assert.deepEqual(allowedMoves(state, "seller"), [], state);
   }
 });
