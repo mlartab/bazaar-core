@@ -106,7 +106,7 @@ async function submitHire() {
     // No Idempotency-Key header: the protocol auto-generates one, so a
     // double-click retries safely. Every call carries the provisioned
     // buyer key: anonymous hires die at 401.
-    await apiPost(
+    const opened = await apiPost(
       "/api/deals",
       { buyer: buyer.id, seller: hireSeller.id, price: budget, metadata: { prompt } },
       buyer.key,
@@ -114,7 +114,10 @@ async function submitHire() {
     );
     $("modal").hidden = true;
     hireSeller = null;
-    toast("Deal opened! Negotiation started.");
+    toast(`Deal ${opened.result.deal.id} opened at ${opened.result.deal.price} CR. Negotiation started.`);
+    await loadMyDeals().catch(() => {});
+    const panel = $("my-deals");
+    if (panel !== null && typeof panel.scrollIntoView === "function") panel.scrollIntoView();
   } catch (err) {
     toast(err.message ?? String(err));
   }
@@ -434,4 +437,156 @@ $("modal-close").addEventListener("click", () => {
   hireSeller = null;
 });
 
+// Buyer "Your deals" panel: post-hire view so a buyer can negotiate and pay
+// without curl. Reads the provisioned buyer identity from localStorage, lists
+// its deals, then enriches each via GET /api/deals/:id — the list rows carry
+// no turn context, the detail adds waitingOn/allowedMoves/actions.
+const DEAL_STATES = new Set(["NEGOTIATING", "AGREED", "ESCROW_LOCKED", "VERIFYING", "SETTLED", "REJECTED"]);
+
+const DEAL_PILL = {
+  NEGOTIATING: "negotiating",
+  AGREED: "agreed",
+  ESCROW_LOCKED: "escrow",
+  EXECUTING: "executing",
+  DELIVERED: "delivered",
+  VERIFYING: "verifying",
+  SETTLED: "settled",
+  REJECTED: "rejected",
+};
+
+async function apiGet(path, agentKey) {
+  const headers = {};
+  if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
+  const res = await fetch(path, { headers });
+  const data = await res.json();
+  if (!res.ok || data.ok !== true) {
+    throw new Error(`${data.error?.code ?? res.status}: ${data.error?.message ?? "request failed"}`);
+  }
+  return data;
+}
+
+function dealCardHTML(detail) {
+  const deal = detail.deal;
+  const waitingOn = detail.waitingOn;
+  const buyerMoves = Array.isArray(detail.allowedMoves?.buyer) ? detail.allowedMoves.buyer : [];
+  let turn = "";
+  if (waitingOn === "buyer") {
+    const btns = [];
+    if (buyerMoves.includes("PAY")) btns.push(`<button class="btn" data-pay="${esc(deal.id)}">Pay ${deal.price} CR</button>`);
+    if (buyerMoves.includes("OFFER")) btns.push(`<button class="btn" data-offer="${esc(deal.id)}">Make offer</button>`);
+    if (buyerMoves.includes("ACCEPT")) btns.push(`<button class="btn" data-accept="${esc(deal.id)}" data-price="${deal.price}">Accept ${deal.price} CR</button>`);
+    turn = `<p><span class="pill settled">Your turn</span></p>` +
+      (btns.length > 0 ? `<div class="row">${btns.join("")}</div>` : `<p class="sub">Your move, via the deal endpoints.</p>`);
+  } else {
+    turn = `<p class="sub">Waiting on ${esc(waitingOn ?? "inspector")}.</p>`;
+  }
+  return `<div class="card deal-card" data-deal-id="${esc(deal.id)}">` +
+    `<div class="badge-row"><span class="pill ${DEAL_PILL[deal.state] ?? "active"}">${esc(deal.state)}</span></div>` +
+    `<div class="agent-id">${esc(deal.id)} → ${esc(deal.seller)}</div>` +
+    `${priceTag(deal.price)}` +
+    `${turn}</div>`;
+}
+
+async function loadMyDeals() {
+  const body = $("my-deals-body");
+  if (body === null) return;
+  const buyer = buyerIdentity();
+  if (buyer === null) {
+    body.innerHTML = `<p class="sub">No deals yet. Hire a seller below.</p>`;
+    return;
+  }
+  let deals = [];
+  try {
+    const data = await apiGet("/api/deals?limit=100", buyer.key);
+    deals = (data.result.deals ?? []).filter((d) => DEAL_STATES.has(d.state));
+  } catch (err) {
+    body.innerHTML = `<p class="sub">Could not load your deals: ${esc(err.message ?? String(err))}</p>`;
+    return;
+  }
+  if (deals.length === 0) {
+    body.innerHTML = `<p class="sub">No deals yet. Hire a seller below.</p>`;
+    return;
+  }
+  const cards = [];
+  for (const d of deals) {
+    try {
+      const detail = await apiGet(`/api/deals/${encodeURIComponent(d.id)}`, buyer.key);
+      cards.push(dealCardHTML({ deal: detail.result.deal, waitingOn: detail.waitingOn, allowedMoves: detail.allowedMoves }));
+    } catch {
+      cards.push(`<div class="card deal-card"><div class="agent-id">${esc(d.id)}</div><p class="sub">Could not load turn status.</p></div>`);
+    }
+  }
+  body.innerHTML = `<div class="agent-grid">${cards.join("")}</div>`;
+}
+
+async function payDeal(id) {
+  const buyer = buyerIdentity();
+  if (buyer === null) {
+    toast("No buyer identity. Hire again to re-provision.");
+    return;
+  }
+  try {
+    await apiPost(`/api/deals/${encodeURIComponent(id)}/pay`, {}, buyer.key);
+    toast(`Deal ${id} paid. Escrow locked.`);
+  } catch (err) {
+    toast(err.message ?? String(err));
+  }
+  await loadMyDeals();
+}
+
+async function offerDeal(id) {
+  const buyer = buyerIdentity();
+  if (buyer === null) {
+    toast("No buyer identity. Hire again to re-provision.");
+    return;
+  }
+  const raw = prompt("Offer price (CR, whole number):");
+  if (raw === null) return;
+  const price = Number(raw.trim());
+  if (!Number.isInteger(price) || price < 1) {
+    toast("Price must be a positive whole number of CR.");
+    return;
+  }
+  try {
+    await apiPost(`/api/deals/${encodeURIComponent(id)}/moves`, { key: crypto.randomUUID(), kind: "OFFER", price }, buyer.key);
+    toast(`Offer of ${price} CR sent on deal ${id}.`);
+  } catch (err) {
+    toast(err.message ?? String(err));
+  }
+  await loadMyDeals();
+}
+
+async function acceptDeal(id, price) {
+  const buyer = buyerIdentity();
+  if (buyer === null) {
+    toast("No buyer identity. Hire again to re-provision.");
+    return;
+  }
+  try {
+    await apiPost(`/api/deals/${encodeURIComponent(id)}/moves`, { key: crypto.randomUUID(), kind: "ACCEPT", price }, buyer.key);
+    toast(`Deal ${id} accepted at ${price} CR.`);
+  } catch (err) {
+    toast(err.message ?? String(err));
+  }
+  await loadMyDeals();
+}
+
+$("my-deals-body").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-pay],[data-offer],[data-accept]");
+  if (btn === null) return;
+  if (btn.hasAttribute("data-pay")) payDeal(btn.dataset.pay);
+  else if (btn.hasAttribute("data-offer")) offerDeal(btn.dataset.offer);
+  else if (btn.hasAttribute("data-accept")) acceptDeal(btn.dataset.accept, Number(btn.dataset.price));
+});
+
+$("my-deals-toggle").addEventListener("click", () => {
+  const body = $("my-deals-body");
+  const toggle = $("my-deals-toggle");
+  const hidden = body.hidden;
+  body.hidden = !hidden;
+  toggle.textContent = hidden ? "Show" : "Hide";
+  toggle.setAttribute("aria-expanded", String(hidden));
+});
+
 load();
+loadMyDeals();

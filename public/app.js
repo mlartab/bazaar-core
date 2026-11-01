@@ -658,11 +658,43 @@ async function showDeal(id) {
     const body = await fetchJSON(`/api/deals/${encodeURIComponent(id)}`);
     setDetail("detail", body.result);
     openDrawer(`Deal ${id}`, JSON.stringify(body.result, null, 2));
+    await maybeMoneyCard(body.result.deal);
     await maybeFrozenBanner(body.result);
   } catch (err) {
     $("detail").textContent = `Failed to load ${id}: ${err.message}`;
     openDrawer(`Deal ${id}`, `Failed to load ${id}: ${err.message}`);
   }
+}
+
+// Money card: live buyer/seller ledger snapshot from the admin money
+// endpoint (one call, no agent keys). Rendered fresh on every showDeal so
+// it never shows a stale tick; re-click the row to refresh after an action.
+async function maybeMoneyCard(deal) {
+  if (deal === undefined || deal === null || typeof deal.id !== "string") return;
+  let money = null;
+  try {
+    money = (await fetchJSON(`/api/admin/deals/${encodeURIComponent(deal.id)}/money`)).result;
+  } catch {
+    return;
+  }
+  const node = $("detail");
+  if (node === null || money === undefined || money === null) return;
+  const fmt = (n) => (Number.isInteger(n) ? `${n} CR` : "—");
+  const tile = (label, value, cls) =>
+    `<div class="money-tile${cls ? ` ${cls}` : ""}"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+  const side = (who, snap, withEscrow) => {
+    const tiles = tile("Balance", fmt(snap.balance), snap.balance > 0 ? "is-funded" : "is-empty") +
+      tile("Locked", fmt(snap.locked), snap.locked > 0 ? "is-active" : "is-empty");
+    const escrow = withEscrow
+      ? tile("Escrow", money.escrow === null ? "—" : fmt(money.escrow), money.escrow === null ? "is-empty" : "is-active")
+      : "";
+    return `<div class="money-row"><span class="money-who">${esc(who)}</span>${tiles}${escrow}</div>`;
+  };
+  const card = document.createElement("div");
+  card.className = "money-card";
+  card.setAttribute("data-deal-id", deal.id);
+  card.innerHTML = side("Buyer", money.buyer ?? {}, true) + side("Seller", money.seller ?? {}, false);
+  node.insertAdjacentElement("afterbegin", card);
 }
 
 // Frozen-settlement recovery: a VERIFYING deal whose seller is not ACTIVE
@@ -678,25 +710,51 @@ async function maybeFrozenBanner(result) {
   } catch {
     return;
   }
-  if (typeof status !== "string" || status === "ACTIVE") return;
+  if (typeof status !== "string") return;
   const node = $("detail");
   if (node === null) return;
   const banner = document.createElement("div");
   banner.className = "frozen-banner";
-  banner.innerHTML =
-    `<span>⚠️ Settlement frozen — seller is ${esc(status)}. ` +
-    `<button data-frozen-reinstate="${esc(deal.seller)}" data-frozen-deal="${esc(deal.id)}">Reinstate seller</button> ` +
-    `<button data-frozen-refund="${esc(deal.id)}">Force refund</button></span>`;
+  const frozen = status !== "ACTIVE";
+  banner.innerHTML = frozen
+    ? `<span>⚠️ Settlement frozen — seller is ${esc(status)}. ` +
+      `<button data-frozen-reinstate="${esc(deal.seller)}" data-frozen-deal="${esc(deal.id)}">Reinstate seller</button> ` +
+      `<button data-frozen-reinspect="${esc(deal.id)}">Reinspect deal</button> ` +
+      `<button data-frozen-refund="${esc(deal.id)}">Force refund</button></span>`
+    : `<span>⚠️ Deal ${esc(deal.id)} is VERIFYING — seller reinstated. ` +
+      `<button data-frozen-reinspect="${esc(deal.id)}">Reinspect deal</button></span>`;
   node.insertAdjacentElement("afterbegin", banner);
   const reinstate = banner.querySelector("[data-frozen-reinstate]");
   if (reinstate !== null) {
     reinstate.addEventListener("click", async () => {
       try {
         await decide(reinstate.dataset.frozenReinstate, "approve", undefined);
-        toast(`Seller ${reinstate.dataset.frozenReinstate} reinstated. Reinspect the deal to settle.`, "success");
+        toast(`Seller ${reinstate.dataset.frozenReinstate} reinstated. Click Reinspect deal to re-run inspection.`, "success");
         await showDeal(reinstate.dataset.frozenDeal);
       } catch (err) {
         toast(`Reinstate failed: ${err.code ?? err.message}`, "error");
+      }
+    });
+  }
+  const reinspect = banner.querySelector("[data-frozen-reinspect]");
+  if (reinspect !== null) {
+    reinspect.addEventListener("click", async () => {
+      try {
+        const out = await adminFetch(`/api/admin/deals/${encodeURIComponent(reinspect.dataset.frozenReinspect)}/reinspect`, {
+          method: "POST",
+          body: {},
+          idempotency: true,
+        });
+        const state = out?.state ?? out?.result?.deal?.state ?? "unknown";
+        toast(state === "SETTLED" ? "Deal SETTLED after reinspection" : `Reinspect returned ${state}`, state === "SETTLED" ? "success" : "info");
+        tick();
+        await showDeal(reinspect.dataset.frozenReinspect);
+      } catch (err) {
+        if (err.status === 409 && err.code === "SELLER_NOT_ACTIVE") {
+          toast("Seller is still SUSPENDED — reinstate first.", "error");
+        } else {
+          toast(`Reinspect failed: ${err.code ?? err.message}`, "error");
+        }
       }
     });
   }
@@ -704,12 +762,13 @@ async function maybeFrozenBanner(result) {
   if (refundBtn !== null) {
     refundBtn.addEventListener("click", async () => {
       try {
-        await adminFetch(`/api/admin/deals/${encodeURIComponent(refundBtn.dataset.frozenRefund)}/force-refund`, {
+        const refunded = await adminFetch(`/api/admin/deals/${encodeURIComponent(refundBtn.dataset.frozenRefund)}/force-refund`, {
           method: "POST",
           body: {},
           idempotency: true,
         });
-        toast(`Deal ${refundBtn.dataset.frozenRefund} force-refunded to the buyer.`, "success");
+        const amount = refunded?.result?.refunded;
+        toast(`Force-refunded ${Number.isInteger(amount) ? `${amount} CR` : "escrow"} to buyer. Deal ${refundBtn.dataset.frozenRefund} REJECTED.`, "success");
         tick();
         await showDeal(refundBtn.dataset.frozenRefund);
       } catch (err) {
