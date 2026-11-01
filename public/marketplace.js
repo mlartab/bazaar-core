@@ -212,6 +212,20 @@ function trustRow(id) {
 
 
 
+let allAgents = [];
+
+// Client-side + server-side filter state, initialized before any fetch so
+// GET /api/agents never throws "filters is not defined".
+const filters = { skill: "", service_type: "", query: "", category: "", sort: "featured" };
+
+// Sync server-side filters from the UI dropdowns before each fetch.
+function readServerFilters() {
+  const serviceEl = document.getElementById("market-service-type");
+  const skillEl = document.getElementById("market-skill");
+  filters.service_type = serviceEl !== null ? serviceEl.value : "";
+  filters.skill = skillEl !== null ? skillEl.value : "";
+}
+
 function discoveryQuery() {
   const params = new URLSearchParams();
   if (filters.service_type !== "") params.set("service_type", filters.service_type);
@@ -370,6 +384,7 @@ function skeleton() {
 async function load() {
   skeleton();
   try {
+    readServerFilters();
     const path = discoveryQuery();
     const res = await fetch(path);
     if (!res.ok) throw new Error(`GET ${path} -> ${res.status}`);
@@ -490,10 +505,17 @@ function dealCardHTML(detail) {
 async function loadMyDeals() {
   const body = $("my-deals-body");
   if (body === null) return;
-  const buyer = buyerIdentity();
+  // Public directory, private deals: auto-provision a guest buyer identity
+  // (POST /api/agents {role:"buyer"}, key in localStorage) so the panel
+  // never shows a red UNAUTHORIZED error and never crashes the page.
+  let buyer = buyerIdentity();
   if (buyer === null) {
-    body.innerHTML = `<p class="sub">No deals yet. Hire a seller below.</p>`;
-    return;
+    try {
+      buyer = await ensureBuyer();
+    } catch {
+      body.innerHTML = `<p class="sub">No deals yet. Hire a seller below.</p>`;
+      return;
+    }
   }
   let deals = [];
   try {
