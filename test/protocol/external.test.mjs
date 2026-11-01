@@ -151,7 +151,7 @@ test("protocol: /llms.txt and /.well-known/agent.json describe the loop", async 
   assert.equal(b2.result.auth.scheme, "x-agent-key");
   assert.ok(Array.isArray(b2.result.capabilities));
   // Seller search is described so agents know how to narrow the directory.
-  assert.deepEqual(Object.keys(b2.result.directoryFilters).sort(), ["max_price", "service_type", "skills"]);
+  assert.deepEqual(Object.keys(b2.result.directoryFilters).sort(), ["max_price", "service_type", "skill"]);
   assert.deepEqual(b2.result.directoryFilters.service_type.enum, ["endpoint", "negotiation", "compute"]);
   process.env.PUBLIC_BASE_URL = "https://bazaar.example.com";
   const [, b3] = await get("/.well-known/agent.json");

@@ -8,6 +8,9 @@
   },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\" \"test/protocol/*.test.mjs\"",
+    "test:fast": "node --test \"test/*.test.mjs\" \"test/protocol/*.test.mjs\" --test-name-pattern='^(?!.*stream|.*events feed)'",
+    "test:unit": "node --test \"test/*.test.mjs\"",
+    "test:protocol": "node --test \"test/protocol/*.test.mjs\"",
     "start": "node protocol/start.js",
     "dev": "node protocol/start.js"
   },
