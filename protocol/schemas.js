@@ -51,6 +51,13 @@ export const SCHEMAS = {
       // Interaction descriptor (endpoint URL/method/schema, portfolio
       // links). Optional plain object; absent stays null.
       metadata: { type: "object", maxKeys: 20 },
+      // Seller-declared JSON Schema for deal metadata (Schema-Driven
+      // Commerce). Optional plain object; when absent the server stores a
+      // default schema requiring a prompt string.
+      input_schema: { type: "object" },
+      // Seller payout address for real Base Sepolia settlement. Optional;
+      // validated as a 0x address by the handler. Absent stays null.
+      wallet_address: { type: "string", maxLength: 42 },
     },
   },
   patchAgent: {
@@ -101,9 +108,10 @@ export const SCHEMAS = {
       seller: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       price: { type: "integer", required: true, min: 1 },
       // Optional buyer brief for the Hire flow (e.g. { prompt: "..." }).
-      // At most 10 keys, every value a string, so the column stays a
-      // small flat JSON object and never a nested document store.
-      metadata: { type: "object", maxKeys: 10, stringValues: true },
+      // At most 10 keys; values may be any JSON so seller input schemas
+      // can require structured fields like arrays. The seller's
+      // input_schema validates the shape at open time.
+      metadata: { type: "object", maxKeys: 10 },
     },
   },
   move: {
@@ -134,10 +142,13 @@ export const SCHEMAS = {
       capability: { type: "string", maxLength: 64 },
     },
   },
-  // x402 capture handshake: the URL names the deal, so the body carries
-  // nothing. Any field present is a client bug, rejected as unknown.
+  // Real-settlement capture: the buyer funds the escrow wallet on-chain
+  // (Base Sepolia USDC) and proves it with the funding tx hash, which the
+  // handler verifies before locking. Unknown fields stay rejected.
   pay: {
-    fields: {},
+    fields: {
+      tx_hash: { type: "string", nonEmpty: true, maxLength: 66 },
+    },
   },
   rotateKey: {
     fields: {},

@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS agents (
   description TEXT,
   price INTEGER,
   category TEXT,
-  api_key TEXT
+  api_key TEXT,
+  input_schema TEXT DEFAULT '{}',
+  wallet_address TEXT
 );
 CREATE TABLE IF NOT EXISTS deals (
   id TEXT PRIMARY KEY,
@@ -31,7 +33,9 @@ CREATE TABLE IF NOT EXISTS deals (
   created_at INTEGER DEFAULT (unixepoch()),
   expires_at INTEGER,
   close_reason TEXT,
-  delivery_expires_at INTEGER
+  delivery_expires_at INTEGER,
+  pay_tx_hash TEXT,
+  payout_tx_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS moves (
   id TEXT PRIMARY KEY,
@@ -227,6 +231,37 @@ export function openStore(path) {
     } catch {
       // Column present: nothing to migrate.
     }
+    // Seller-declared JSON Schema for deal metadata (Schema-Driven
+    // Commerce). Same guarded pattern: the throw means "already there".
+    // Pre-schema rows predate the feature and read as the empty schema,
+    // which disables validation, so old listings keep trading.
+    try {
+      db.exec("ALTER TABLE agents ADD COLUMN input_schema TEXT DEFAULT '{}'");
+    } catch {
+      // Column present: nothing to migrate.
+    }
+    try {
+      db.exec("UPDATE agents SET input_schema = '{}' WHERE input_schema IS NULL");
+    } catch {
+      // Nothing to backfill.
+    }
+    // Seller payout address for real Base Sepolia settlement. Same guarded
+    // pattern; NULL means "no on-chain payout possible", which the
+    // inspector treats as ledger-only settlement.
+    try {
+      db.exec("ALTER TABLE agents ADD COLUMN wallet_address TEXT");
+    } catch {
+      // Column present: nothing to migrate.
+    }
+    // Real chain proofs for the escrow lifecycle. NULL on pre-migration
+    // rows, which predate on-chain settlement.
+    for (const column of ["pay_tx_hash TEXT", "payout_tx_hash TEXT"]) {
+      try {
+        db.exec(`ALTER TABLE deals ADD COLUMN ${column}`);
+      } catch {
+        // Column present: nothing to migrate.
+      }
+    }
   } catch (err) {
     try {
       db.close();
@@ -264,6 +299,18 @@ export function openStore(path) {
       return null;
     }
   };
+  // Seller input schemas ride as JSON text in SQLite. Readers always get a
+  // parsed object: missing, empty, or unparseable columns read as the empty
+  // schema {}, which disables deal-metadata validation.
+  const parseInputSchema = (value) => {
+    if (typeof value !== "string" || value.length === 0) return {};
+    try {
+      const parsed = JSON.parse(value);
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  };
 
   const store = {
     close() {
@@ -272,7 +319,7 @@ export function openStore(path) {
 
     saveAgent(agent) {
       if (!agent || !isValidId(agent.id)) return fail("BAD_ID", "agent must have a non-empty string id");
-      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, category, api_key, probation, delivery_sla_seconds, service_type, min_price, skills_json, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+      run("INSERT INTO agents (id, role, balance, capability, status, status_reason, title, description, price, category, api_key, probation, delivery_sla_seconds, service_type, min_price, skills_json, metadata_json, input_schema, wallet_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
         agent.id,
         agent.role ?? null,
         agent.balance ?? null,
@@ -294,6 +341,8 @@ export function openStore(path) {
         // here; direct store callers must pass JSON-compatible values too.
         agent.skills !== undefined ? JSON.stringify(agent.skills) : null,
         agent.metadata !== undefined ? JSON.stringify(agent.metadata) : null,
+        agent.input_schema !== undefined ? JSON.stringify(agent.input_schema) : "{}",
+        agent.wallet_address ?? null,
       ]);
       return { ok: true };
     },
@@ -338,8 +387,10 @@ export function openStore(path) {
       return get("SELECT capability FROM agents WHERE id = ?", [id])?.capability ?? null;
     },
     getAgent(id) {
-      // Column list frozen: existing readers assert this exact shape.
-      return get("SELECT id, role, balance FROM agents WHERE id = ?", [id]) ?? null;
+      const row = get("SELECT id, role, balance, input_schema, wallet_address FROM agents WHERE id = ?", [id]) ?? null;
+      if (row === null) return null;
+      const { input_schema, wallet_address, ...agent } = row;
+      return { ...agent, input_schema: parseInputSchema(input_schema), wallet_address: wallet_address ?? null };
     },
     listAgents(filters = {}) {
       // The public marketplace sees only approved *seller* listings.
@@ -351,7 +402,7 @@ export function openStore(path) {
       // matching uses json_each so tags stay exact, never substring hits.
       const { skill, service_type, max_price } = filters;
       const params = [];
-      let sql = "SELECT id, role, capability, title, description, price, category, service_type, min_price, skills_json, metadata_json FROM agents WHERE role = 'seller' AND status = 'ACTIVE'";
+      let sql = "SELECT id, role, capability, title, description, price, category, service_type, min_price, skills_json, metadata_json, input_schema FROM agents WHERE role = 'seller' AND status = 'ACTIVE'";
       if (service_type !== undefined) {
         sql += " AND service_type = ?";
         params.push(service_type);
@@ -368,11 +419,12 @@ export function openStore(path) {
         params.push(max_price);
       }
       sql += " ORDER BY rowid";
-      return all(sql, params).map(({ skills_json, metadata_json, ...row }) => ({
+      return all(sql, params).map(({ skills_json, metadata_json, input_schema, ...row }) => ({
         ...row,
         service_type: row.service_type ?? "negotiation",
         skills: parseSkills(skills_json),
         metadata: parseMetadata(metadata_json),
+        input_schema: parseInputSchema(input_schema),
       }));
     },
     listAllAgents() {
@@ -490,11 +542,24 @@ export function openStore(path) {
     // close reason). getDeal's frozen shape is untouched.
     getDealRow(id) {
       if (!isValidId(id)) return null;
-      const row = get("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, sla_ms, updated_at, metadata_json FROM deals WHERE id = ?", [id]);
+      const row = get("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, sla_ms, updated_at, metadata_json, pay_tx_hash, payout_tx_hash FROM deals WHERE id = ?", [id]);
       if (row === undefined || row === null) return null;
       const { metadata_json, ...full } = row;
       const metadata = parseMetadata(metadata_json);
       return metadata === null ? full : { ...full, metadata };
+    },
+    // Chain-proof writers: pay records the buyer's verified funding tx,
+    // payout records the escrow's seller release. Both are TEXT (hashes),
+    // never amounts — amounts live in the ledger and on-chain.
+    setDealPayTx(id, txHash) {
+      const result = run("UPDATE deals SET pay_tx_hash = ? WHERE id = ?", [txHash, id]);
+      if (result.changes === 0) return fail("NO_SUCH_DEAL", `no deal with id ${id}`);
+      return { ok: true };
+    },
+    setDealPayoutTx(id, txHash) {
+      const result = run("UPDATE deals SET payout_tx_hash = ? WHERE id = ?", [txHash, id]);
+      if (result.changes === 0) return fail("NO_SUCH_DEAL", `no deal with id ${id}`);
+      return { ok: true };
     },
     // Negotiation-rule snapshot for the referee: the listing shape as it
     // stood at open ({ service_type, min_price, price }), or null for
@@ -582,14 +647,16 @@ export function openStore(path) {
     // frozen list shapes so existing readers never change.
     getAgentDetail(id) {
       if (!isValidId(id)) return null;
-      const row = get("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, COALESCE(probation, 0) AS probation, service_type, min_price, skills_json, metadata_json FROM agents WHERE id = ?", [id]);
+      const row = get("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, COALESCE(probation, 0) AS probation, service_type, min_price, skills_json, metadata_json, input_schema, wallet_address FROM agents WHERE id = ?", [id]);
       if (row === undefined || row === null) return null;
-      const { skills_json, metadata_json, ...rest } = row;
+      const { skills_json, metadata_json, input_schema, wallet_address, ...rest } = row;
       return {
         ...rest,
         service_type: rest.service_type ?? "negotiation",
         skills: parseSkills(skills_json),
         metadata: parseMetadata(metadata_json),
+        input_schema: parseInputSchema(input_schema),
+        wallet_address: wallet_address ?? null,
       };
     },
     listExpiringDeals(now) {

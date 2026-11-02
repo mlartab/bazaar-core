@@ -88,7 +88,7 @@ test("protocol: a row written then read back is identical", () => {
   const store = openStore(tmp.file);
   try {
     assert.deepEqual(store.saveAgent({ id: "buyer", role: "buyer", balance: 100 }), { ok: true });
-    assert.deepEqual(store.getAgent("buyer"), { id: "buyer", role: "buyer", balance: 100 });
+    assert.deepEqual(store.getAgent("buyer"), { id: "buyer", role: "buyer", balance: 100, input_schema: {}, wallet_address: null });
 
     assert.deepEqual(
       store.saveDeal({ id: "deal1", state: "NEGOTIATING", buyer: "buyer", seller: "seller", price: 50 }),
@@ -135,7 +135,7 @@ test("protocol: a second open on the same file sees the same rows", () => {
   }
   const second = openStore(tmp.file);
   try {
-    assert.deepEqual(second.getAgent("buyer"), { id: "buyer", role: "buyer", balance: 100 });
+    assert.deepEqual(second.getAgent("buyer"), { id: "buyer", role: "buyer", balance: 100, input_schema: {}, wallet_address: null });
     assert.equal(second.getDeal("deal1").state, "AGREED");
     assert.equal(second.listMoves("deal1").length, 1);
     assert.deepEqual(second.getDelivery("d1"), { id: "d1", deal_id: "deal1", status: null, delivery_url: "u1" });

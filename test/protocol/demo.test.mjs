@@ -1,14 +1,12 @@
+process.env.NO_PROXY = 'localhost,127.0.0.1';
+process.env.no_proxy = 'localhost,127.0.0.1';
+
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer } from "../../protocol/server.js";
-
-// The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
-// traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
-process.env.NO_PROXY = "127.0.0.1,localhost";
-process.env.no_proxy = "127.0.0.1,localhost";
 // Same-process server reads these at request/boot time; neither secret
 // leaves the test process. DEMO_SAFE is pinned here and restored after:
 // each test file runs in its own process, but hygiene is free.

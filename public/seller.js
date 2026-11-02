@@ -269,10 +269,12 @@ function renderActions(deal, moves) {
       // counter. The server is the final judge either way.
       const price = Number($("accept-price").value);
       try {
-        await api(`/api/deals/${encodeURIComponent(deal.id)}/moves`, {
+        const accepted = await api(`/api/deals/${encodeURIComponent(deal.id)}/moves`, {
           method: "POST",
           body: { key: `accept-${Date.now()}`, kind: "ACCEPT", price },
         });
+        const at = accepted?.result?.move?.price ?? price;
+        $("detail").textContent = `Accepted at ${at} CR. Buyer must pay next.`;
         await load();
       } catch (err) {
         $("detail").textContent = `Accept failed: ${err.message}`;
@@ -298,7 +300,7 @@ function renderActions(deal, moves) {
           method: "POST",
           body: { id: deliveryId, dealId: deal.id, deliveryUrl: `deliverable:${deliveryId}` },
         });
-        $("detail").textContent = `Delivery ${deliveryId} accepted for inspection (202). The deal settles automatically on a valid verdict.`;
+        $("detail").textContent = `Delivered ${deliveryId}. Awaiting inspector — escrow ${deal.price} CR still locked. The deal settles automatically on a valid verdict.`;
         await load();
       } catch (err) {
         $("detail").textContent = `Delivery failed: ${err.message}`;

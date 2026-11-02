@@ -25,6 +25,7 @@ export const PROFILE_COLUMNS = Object.freeze([
   "min_price",
   "skills",
   "metadata",
+  "input_schema",
   // Syncable but never sourced from SQLite (emails live only in Supabase;
   // link-email passes them explicitly). Still allowlisted so the transport
   // can carry them.
@@ -56,6 +57,9 @@ export function buildProfilePayload(row) {
   // clobber them with nulls.
   if (row.skills !== undefined) payload.skills = row.skills;
   if (row.metadata !== undefined && row.metadata !== null) payload.metadata = row.metadata;
+  // Seller-declared brief schema for Schema-Driven Commerce. Present only
+  // when set, so partial syncs never clobber it with nulls.
+  if (row.input_schema !== undefined && row.input_schema !== null) payload.input_schema = row.input_schema;
   // Present only when explicitly supplied (link-email): absent emails are
   // omitted, never nulled, so routine syncs cannot clobber a linked address
   // on merge-duplicates upserts.

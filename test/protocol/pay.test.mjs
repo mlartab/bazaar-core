@@ -4,6 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
@@ -57,6 +62,7 @@ function assertErr(body, code) {
 }
 
 before(async () => {
+  setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "bazaar-pay-"));
   const started = await startServer({ dbPath: path.join(dir, "store.db"), port: 0 });
   url = started.url;
@@ -98,14 +104,15 @@ async function agreedDeal(id, price) {
 
 test("protocol: pay on AGREED locks the escrow and returns the x402 receipt", async () => {
   await agreedDeal("d-pay", 40);
-  const paid = await postRaw("/api/deals/d-pay/pay", {});
+  const paid = await postRaw("/api/deals/d-pay/pay", { tx_hash: TX });
   assert.equal(paid.status, 200);
   assert.equal(paid.body.ok, true);
   assert.equal(paid.body.state, "ESCROW_LOCKED");
   // Proof lives in two places that must agree: the header the client
-  // keeps, and the body the client renders.
-  assert.ok(typeof paid.proof === "string" && paid.proof.startsWith("x402-receipt-"));
-  assert.equal(paid.body.result.receipt, paid.proof);
+  // keeps, and the body the client renders. Both carry the verified
+  // funding tx hash — no invented receipts.
+  assert.equal(paid.proof, TX);
+  assert.equal(paid.body.result.receipt, TX);
   // Truthful amount: the ACCEPT locked 40 on a 50-price deal, so the event
   // reports the lock — never the listing price.
   const [, eb] = await get("/api/events");
@@ -131,7 +138,7 @@ test("protocol: pay on NEGOTIATING answers 402 NEEDS_ACCEPTANCE", async () => {
 
 test("protocol: a second pay answers 409 without a second lock", async () => {
   await agreedDeal("d-twice", 40);
-  const first = await postRaw("/api/deals/d-twice/pay", {});
+  const first = await postRaw("/api/deals/d-twice/pay", { tx_hash: TX });
   assert.equal(first.status, 200);
   const second = await postRaw("/api/deals/d-twice/pay", {});
   assert.equal(second.status, 409);
@@ -152,7 +159,7 @@ test("protocol: pay errors carry state and allowedMoves for agent self-correctio
   assert.ok(needs.body.allowedMoves !== undefined && typeof needs.body.allowedMoves === "object");
   assert.ok(Array.isArray(needs.body.allowedMoves.buyer) && needs.body.allowedMoves.buyer.length > 0);
   await agreedDeal("d-twice-err", 40);
-  const first = await postRaw("/api/deals/d-twice-err/pay", {});
+  const first = await postRaw("/api/deals/d-twice-err/pay", { tx_hash: TX });
   assert.equal(first.status, 200);
   const second = await postRaw("/api/deals/d-twice-err/pay", {});
   assert.equal(second.status, 409);

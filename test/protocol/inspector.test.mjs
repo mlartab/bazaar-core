@@ -7,6 +7,12 @@ import { openStore } from "../../protocol/db.js";
 import { createLedger, checkInvariant, balanceOf } from "../../src/ledger.js";
 import { startServer, reconcileLedger } from "../../protocol/server.js";
 import { mockVerdict, runInspection, parseVerdict, buildInspectionPrompt } from "../../protocol/inspector.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 import { DEFINITION, execute, inspectorMode } from "../../protocol/meta-brain.js";
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
@@ -232,7 +238,7 @@ test("protocol: escrow survives a server restart and settles at the accept price
   assert.equal((await post(first.url, "/api/deals", { id: "r-deal", buyer: "rb", seller: "rs", price: 50 }, buyerKey)).status, 200);
   assert.equal((await post(first.url, "/api/deals/r-deal/moves", { key: "k1", kind: "OFFER", price: 50 }, buyerKey)).status, 200);
   assert.equal((await post(first.url, "/api/deals/r-deal/moves", { key: "k2", kind: "ACCEPT", price: 40 }, sellerKey)).status, 200);
-  assert.equal((await post(first.url, "/api/deals/r-deal/pay", {}, buyerKey)).status, 200);
+  assert.equal((await post(first.url, "/api/deals/r-deal/pay", { tx_hash: TX }, buyerKey)).status, 200);
   await first.close();
 
   // Fresh process, same file: the in-memory ledger starts empty and the

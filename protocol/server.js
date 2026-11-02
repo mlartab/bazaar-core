@@ -112,6 +112,7 @@ import { runInspection } from "./inspector.js";
 import { inspectorMode } from "./meta-brain.js";
 import { syncProfile, syncAgentRegistration, syncAgentStatus, syncAgentEmails } from "./supabase-sync.js";
 import { supabaseAdmin } from "./supabase.js";
+import { crToUsdc, verifyTransaction } from "./wallet.js";
 import { validate as validateReferee } from "../src/referee.js";
 import { allowedMoves, ACTIONS } from "../src/menu.js";
 import { EDGES, transition } from "../src/deal-states.js";
@@ -140,6 +141,113 @@ function toContractError(result) {
   if (result.bounds !== undefined) out.bounds = result.bounds;
   return out;
 }
+
+// Schema-Driven Commerce: the fallback brief shape stored when a seller
+// registers without declaring one.
+export const DEFAULT_INPUT_SCHEMA = {
+  type: "object",
+  properties: { prompt: { type: "string" } },
+};
+
+// Lightweight validation of a deal metadata payload against a seller's
+// input_schema, with no new dependencies. Accepts standard JSON Schema
+// ({ properties, required }) and the flat shorthand ({ field: "type" }).
+// An empty (or missing) schema disables validation. Otherwise every
+// declared property is required unless the schema names a `required`
+// array, and each present value must match its declared type.
+// Returns { ok: true } or { ok: false, message }.
+export function validateMetadataAgainstSchema(schema, metadata) {
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return { ok: true };
+  const standard =
+    typeof schema.properties === "object" && schema.properties !== null && !Array.isArray(schema.properties);
+  const properties = standard ? schema.properties : schema;
+  // Shorthand schemas ({ field: "type" }) share key space with the
+  // envelope words; standard schemas name real fields under properties.
+  const names = Object.keys(properties).filter(
+    (name) => standard || (name !== "type" && name !== "required" && name !== "properties"),
+  );
+  if (names.length === 0) return { ok: true };
+  const required = Array.isArray(schema.required) ? schema.required : names;
+  const data = typeof metadata === "object" && metadata !== null ? metadata : {};
+  for (const name of required) {
+    if (properties[name] === undefined) continue;
+    if (data[name] === undefined) {
+      return { ok: false, message: `missing required field: ${name}` };
+    }
+  }
+  const article = (t) => (/^[aeiou]/i.test(t) ? `an ${t}` : `a ${t}`);
+  const matches = (value, t) => {
+    if (t === "string") return typeof value === "string";
+    if (t === "integer") return Number.isInteger(value);
+    if (t === "number") return typeof value === "number";
+    if (t === "boolean") return typeof value === "boolean";
+    if (t === "array") return Array.isArray(value);
+    if (t === "object") return typeof value === "object" && value !== null && !Array.isArray(value);
+    return true;
+  };
+  for (const name of names) {
+    if (data[name] === undefined) continue;
+    const rule = properties[name];
+    const t = typeof rule === "string" ? rule : rule?.type;
+    if (t !== undefined && !matches(data[name], t)) {
+      return { ok: false, message: `field ${name} must be ${article(t)}` };
+    }
+  }
+  return { ok: true };
+}
+
+// MCP tool catalogue: the adapter layer speaks these four tools. Each
+// entry carries a standard MCP inputSchema; execution reuses the
+// protocol handlers below, so the Ledger, Referee, and state machine
+// stay the single source of truth.
+export const MCP_TOOLS = [
+  {
+    name: "bazaar_search_marketplace",
+    description: "Search the Bazaar marketplace for seller listings, optionally narrowed by skill tag.",
+    inputSchema: {
+      type: "object",
+      properties: { skill: { type: "string" } },
+    },
+  },
+  {
+    name: "bazaar_open_deal",
+    description:
+      "Open a deal with a seller at an agreed price. The metadata object MUST strictly match the seller's input_schema.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        seller_id: { type: "string" },
+        price: { type: "number" },
+        metadata: { type: "object" },
+      },
+      required: ["seller_id", "price"],
+    },
+  },
+  {
+    name: "bazaar_pay_deal",
+    description: "Lock escrow for a deal by proving on-chain USDC funding, moving it toward execution.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deal_id: { type: "string" },
+        tx_hash: { type: "string" },
+      },
+      required: ["deal_id", "tx_hash"],
+    },
+  },
+  {
+    name: "bazaar_deliver_work",
+    description: "Submit a deliverable for a paid deal, starting inspection.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deal_id: { type: "string" },
+        delivery_url: { type: "string" },
+      },
+      required: ["deal_id", "delivery_url"],
+    },
+  },
+];
 
 // Conflict precision: state races are 409s, not 400s. Anything else keeps
 // the status its call site already chose.
@@ -538,6 +646,10 @@ export function createApp(dbPath) {
       return [200, { ok: true, state: null, allowedMoves: [], result: { agents: store.listAgents({ skill, service_type, max_price }) } }];
     },
 
+    // MCP tool catalogue: public discovery document for Model Context
+    // Protocol clients. Standard MCP shape ({ tools: [...] }).
+    "GET /api/mcp/tools": () => [200, { tools: MCP_TOOLS }],
+
     // Public: how a registered agent polls its own lifecycle outcome.
     "GET /api/agents/:id/status": (_body, id) => {
       const review = store.getAgentStatus(id);
@@ -699,20 +811,26 @@ export function createApp(dbPath) {
       if (slaSeconds < sla.min || slaSeconds > sla.max) {
         return [400, error("INVALID_SCHEMA", `field delivery_sla_seconds must be between ${sla.min} and ${sla.max} seconds`)];
       }
-      // getAgent's column list is frozen for existing readers, so the
-      // agent shape stays { id, role, balance }; the credential rides
-      // beside it, shown once like a Stripe secret key.
+      // The wire agent shape stays { id, role, balance }; the credential
+      // rides beside it, shown once like a Stripe secret key. The stored
+      // input_schema defaults to the prompt brief when the seller declares
+      // none of their own.
       const apiKey = randomUUID();
       const probation = autoApprove ? 1 : 0;
       const status = autoApprove ? "ACTIVE" : "PENDING";
-      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, category, api_key: apiKey, status, probation, delivery_sla_seconds: slaSeconds, service_type: serviceType, min_price: body.min_price ?? null, skills: body.skills, metadata: body.metadata });
+      // Optional on-chain payout address: must be a 0x address when given.
+      if (body.wallet_address !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(body.wallet_address)) {
+        return [400, error("INVALID_SCHEMA", "field wallet_address must be a 0x-prefixed 20-byte address")];
+      }
+      store.saveAgent({ id: body.id, role: body.role, balance: 0, capability: body.capability, title: body.title, description: body.description, price: body.price, category, api_key: apiKey, status, probation, delivery_sla_seconds: slaSeconds, service_type: serviceType, min_price: body.min_price ?? null, skills: body.skills, metadata: body.metadata, input_schema: body.input_schema ?? DEFAULT_INPUT_SCHEMA, wallet_address: body.wallet_address ?? null });
       ensureAccount(body.id);
       emit({ type: "AGENT_REGISTERED", agentId: body.id, role: body.role });
       // Outbound replica only: after the SQLite commit, never awaited, so
       // a Supabase outage stales discovery without failing registration.
-      syncAgentRegistration({ id: body.id, role: body.role, balance: 0, capability: body.capability, status, title: body.title, description: body.description, price: body.price, category }).catch(() => {});
+      syncAgentRegistration({ id: body.id, role: body.role, balance: 0, capability: body.capability, status, title: body.title, description: body.description, price: body.price, category, input_schema: body.input_schema ?? DEFAULT_INPUT_SCHEMA }).catch(() => {});
       // The queue message rides beside the frozen agent shape, so existing
       // readers keep passing while new agents learn they are not listed yet.
+      const { id: agentId, role: agentRole, balance: agentBalance } = store.getAgent(body.id);
       return [
         200,
         {
@@ -720,7 +838,9 @@ export function createApp(dbPath) {
           state: null,
           allowedMoves: [],
           result: {
-            agent: store.getAgent(body.id),
+            // Frozen shape: the stored input_schema never leaks into the
+            // registration envelope.
+            agent: { id: agentId, role: agentRole, balance: agentBalance },
             message: autoApprove
               ? "Agent registered successfully and listed with probation caps."
               : "Agent registered successfully. Your listing is currently in the review queue.",
@@ -757,6 +877,16 @@ export function createApp(dbPath) {
       if (store.getDeal(dealId) !== null) {
         return [409, error("DUPLICATE_DEAL", `deal ${dealId} already exists`)];
       }
+      // Schema-Driven Commerce: a present brief must satisfy the seller's
+      // declared input_schema before any funds move. An absent brief stays
+      // valid; an empty schema ({}) disables validation entirely.
+      if (body.metadata !== undefined) {
+        const sellerSchema = store.getAgentDetail(body.seller)?.input_schema;
+        const schemaCheck = validateMetadataAgainstSchema(sellerSchema, body.metadata);
+        if (!schemaCheck.ok) {
+          return [400, error("INVALID_SCHEMA", schemaCheck.message)];
+        }
+      }
       for (const party of [body.buyer, body.seller]) {
         if (store.getAgentProbation(party) === 1) {
           if (body.price > probationPriceCap()) {
@@ -784,6 +914,57 @@ export function createApp(dbPath) {
       emit({ type: "DEAL_OPENED", dealId, state: "NEGOTIATING" });
       const deal = store.getDeal(dealId);
       return [200, { ok: true, state: deal.state, allowedMoves: movesFor(deal.state), result: { deal } }];
+    },
+
+    // MCP execution: thin adapter only. Arguments route straight to the
+    // existing protocol handlers above — no Ledger, Referee, or state
+    // logic lives here. Results come back in standard MCP content form;
+    // the inner handler's status code is preserved so failures (e.g.
+    // INVALID_SCHEMA) keep their protocol meaning.
+    "POST /api/mcp/execute": async (body, _id, _agent, req) => {
+      const agent = store.getAgentByKey(req?.headers?.["x-agent-key"]);
+      if (agent === null) {
+        return [401, { content: [{ type: "text", text: JSON.stringify(error("UNAUTHORIZED", "mcp execution requires a valid x-agent-key header")) }] }];
+      }
+      const args = body?.arguments !== undefined ? body.arguments : {};
+      const wrap = (payload) => ({ content: [{ type: "text", text: JSON.stringify(payload) }] });
+      switch (body?.tool) {
+        case "bazaar_search_marketplace": {
+          const [status, payload] = await handlers["GET /api/agents"](
+            undefined,
+            undefined,
+            agent,
+            typeof args.skill === "string" ? { skill: args.skill } : {},
+          );
+          return [status, wrap(payload)];
+        }
+        case "bazaar_open_deal": {
+          const [status, payload] = await handlers["POST /api/deals"](
+            { buyer: agent.id, seller: args.seller_id, price: args.price, metadata: args.metadata },
+            undefined,
+            agent,
+          );
+          return [status, wrap(payload)];
+        }
+        case "bazaar_pay_deal": {
+          const [status, payload] = await handlers["POST /api/deals/:id/pay"](
+            { tx_hash: args.tx_hash },
+            args.deal_id,
+            agent,
+          );
+          return [status, wrap(payload)];
+        }
+        case "bazaar_deliver_work": {
+          const [status, payload] = await handlers["POST /api/deals/:id/delivery"](
+            { id: `del-${randomUUID().slice(0, 8)}`, deliveryUrl: args.delivery_url },
+            args.deal_id,
+            agent,
+          );
+          return [status, wrap(payload)];
+        }
+        default:
+          return [400, wrap(error("UNKNOWN_TOOL", `unknown mcp tool: ${String(body?.tool)}`))];
+      }
     },
 
     "POST /api/deals/:id/moves": (body, id, agent) => {
@@ -861,7 +1042,7 @@ export function createApp(dbPath) {
     // captures them (capture): if the lock is somehow missing we lock here,
     // but if ACCEPT already locked we never lock twice — the state flip to
     // ESCROW_LOCKED is the effect, the receipt header is the proof.
-    "POST /api/deals/:id/pay": (body, id, agent) => {
+    "POST /api/deals/:id/pay": async (body, id, agent) => {
       const checked = validateSchema("pay", body);
       if (!checked.ok) return [400, toContractError(checked)];
       const deal = store.getDeal(id);
@@ -881,6 +1062,22 @@ export function createApp(dbPath) {
       if (deal.state !== "AGREED") {
         return [409, { ...error("ALREADY_LOCKED", `deal ${id} is ${deal.state}; its single escrow lock already happened`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
+      // Real settlement: the buyer funds the escrow wallet on-chain (Base
+      // Sepolia USDC) and proves it with the funding tx hash. The chain is
+      // verified before anything locks: no hash, no escrow.
+      if (typeof body.tx_hash !== "string" || body.tx_hash.length === 0) {
+        return [400, { ...error("INVALID_PAYMENT", `deal ${id} requires a Base Sepolia USDC funding tx_hash`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
+      }
+      let funded = false;
+      try {
+        funded = await verifyTransaction(body.tx_hash, crToUsdc(deal.price), deal.buyer);
+      } catch {
+        funded = false;
+      }
+      if (!funded) {
+        return [400, { ...error("INVALID_PAYMENT", `deal ${id} funding tx ${body.tx_hash} did not verify: expected ${crToUsdc(deal.price)} USDC from ${deal.buyer} to the escrow wallet`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
+      }
+      store.setDealPayTx(id, body.tx_hash);
       if (ledger.locks[id] === undefined) {
         const locked = lock(ledger, deal.buyer, id, deal.price);
         if (!locked.ok) return [400, { ...toContractError(locked), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
@@ -900,9 +1097,10 @@ export function createApp(dbPath) {
       // lock to the delivery sweeper. Pre-snapshot rows fall back to the
       // env default, matching open-time behavior for new listings.
       store.setDealDeliveryExpiry(id, Date.now() + (store.getDealRow(id)?.sla_ms ?? deliverySlaBounds().def * 1000));
-      // A real-looking receipt: the client proves capture with this string,
-      // the server proves it with the matching ledger lock.
-      const receipt = `x402-receipt-${randomUUID()}`;
+      // The receipt is the verified chain proof itself: the funding tx
+      // hash the buyer supplied and the server verified above. Both the
+      // header and the body carry it so clients can reconcile either way.
+      const receipt = body.tx_hash;
       const current = store.getDeal(id);
       return [
         200,
@@ -1208,6 +1406,31 @@ export function createApp(dbPath) {
       return [200, { ok: true, state: current.state, allowedMoves: movesFor(current.state), ...turnContext(current, null), result: { deal: current, refunded: back.refunded, close_reason: "ADMIN_FORCE_REFUND" } }];
     },
 
+    // Operator money read: live ledger balances plus this deal's escrow in
+    // one call, so the console never holds agent keys and never shows the
+    // write-once SQLite balance column. Read-only: no locks move here.
+    "GET /api/admin/deals/:id/money": (_body, id) => {
+      const deal = store.getDeal(id);
+      if (deal === null) return [404, error("NO_SUCH_DEAL", `no deal with id ${id}`)];
+      const balanceOf = (agentId) => ledger.balances[agentId] ?? 0;
+      const lockedFor = (agentId) =>
+        Object.values(ledger.locks).reduce((sum, escrow) => sum + (escrow.agentId === agentId ? escrow.amount : 0), 0);
+      return [
+        200,
+        {
+          ok: true,
+          state: deal.state,
+          allowedMoves: movesFor(deal.state),
+          result: {
+            dealId: id,
+            buyer: { balance: balanceOf(deal.buyer), locked: lockedFor(deal.buyer) },
+            seller: { balance: balanceOf(deal.seller), locked: lockedFor(deal.seller) },
+            escrow: ledger.locks[id]?.amount ?? null,
+          },
+        },
+      ];
+    },
+
     // Frozen-settlement recovery: re-run the inspector over the recorded
     // delivery. Settles normally when the seller is ACTIVE again (or
     // refunds on a negative verdict); stays frozen when the seller is
@@ -1357,6 +1580,10 @@ export function createApp(dbPath) {
       const reinspect = pathname.match(/^\/api\/admin\/deals\/([^/]+)\/reinspect$/);
       if (reinspect !== null && method === "POST" && decodeURIComponent(reinspect[1]) !== "") {
         return [handlers["POST /api/admin/deals/:id/reinspect"], decodeURIComponent(reinspect[1])];
+      }
+      const money = pathname.match(/^\/api\/admin\/deals\/([^/]+)\/money$/);
+      if (money !== null && method === "GET" && decodeURIComponent(money[1]) !== "") {
+        return [handlers["GET /api/admin/deals/:id/money"], decodeURIComponent(money[1])];
       }
       const agentEdit = pathname.match(/^\/api\/admin\/agents\/([^/]+)$/);
       if (agentEdit !== null && (method === "PATCH" || method === "DELETE" || method === "GET") && decodeURIComponent(agentEdit[1]) !== "") {

@@ -1,3 +1,6 @@
+process.env.NO_PROXY = 'localhost,127.0.0.1';
+process.env.no_proxy = 'localhost,127.0.0.1';
+
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -5,11 +8,14 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { startServer, buildVerdict } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 import { negotiationWindowMs, inspectionTimeoutMs, deliverySlaBounds } from "../../protocol/config.js";
 
-// Loopback must bypass the sandbox proxy.
-process.env.NO_PROXY = "127.0.0.1,localhost";
-process.env.no_proxy = "127.0.0.1,localhost";
 process.env.ADMIN_SECRET = "test-agentloop-secret";
 
 let url;
@@ -66,18 +72,25 @@ async function register(id, role, extra = {}) {
 }
 
 // Raw SSE client: collects data frames until `want` matches or timeout.
+// Every pending request and open stream registers in liveStreams so the
+// after() hook can forcefully abort them; a wedged server response must
+// never keep the event loop (and the test process) alive.
+const liveStreams = new Set();
 function openStream(agentId, key, { since } = {}) {
   return new Promise((resolve, reject) => {
     const headers = { Accept: "text/event-stream" };
     if (key !== undefined) headers["x-agent-key"] = key;
     if (since !== undefined) headers["Last-Event-ID"] = String(since);
     const target = new URL(`/api/agents/${agentId}/events/stream`, url);
+    const handle = { req: null, res: null, status: null, frames: null, closed: false };
+    liveStreams.add(handle);
     const req = http.get(target, { headers }, (res) => {
       const frames = [];
       let buf = "";
       let closed = false;
       res.on("close", () => {
         closed = true;
+        handle.closed = true;
       });
       res.on("data", (chunk) => {
         buf += chunk.toString();
@@ -92,9 +105,24 @@ function openStream(agentId, key, { since } = {}) {
           }
         }
       });
-      resolve({ status: res.statusCode, frames, close: () => res.destroy(), isClosed: () => closed });
+      handle.res = res;
+      handle.status = res.statusCode;
+      handle.frames = frames;
+      resolve({
+        status: res.statusCode,
+        frames,
+        close: () => {
+          liveStreams.delete(handle);
+          res.destroy();
+        },
+        isClosed: () => closed,
+      });
     });
-    req.on("error", reject);
+    handle.req = req;
+    req.on("error", (err) => {
+      liveStreams.delete(handle);
+      reject(err);
+    });
   });
 }
 
@@ -124,6 +152,17 @@ before(async () => {
 });
 
 after(async () => {
+  // Forcefully abort any SSE request/stream left open by a failed test so
+  // a wedged socket can never keep the event loop (and this process) alive.
+  for (const handle of liveStreams) {
+    try {
+      handle.res?.destroy();
+    } catch {}
+    try {
+      handle.req?.destroy();
+    } catch {}
+  }
+  liveStreams.clear();
   await stop();
   fs.rmSync(dir, { recursive: true, force: true });
 });
@@ -208,7 +247,7 @@ test("protocol: listing SLA is snapshotted onto the deal and honored at pay", as
   await post(`/api/deals/loop-sla-1/moves`, { key: "sla-o", kind: "OFFER", price: 50 }, { agentKey: cKey });
   await post(`/api/deals/loop-sla-1/moves`, { key: "sla-a", kind: "ACCEPT", price: 50 }, { agentKey: sellerKey });
   const before = Date.now();
-  const [ps] = await post(`/api/deals/loop-sla-1/pay`, {}, { agentKey: cKey });
+  const [ps] = await post(`/api/deals/loop-sla-1/pay`, { tx_hash: TX }, { agentKey: cKey });
   assert.equal(ps, 200);
   const [, detail] = await get("/api/deals/loop-sla-1", cKey);
   const stamp = Date.parse(detail.result.verdict.timestamps.delivery_expires);
@@ -225,7 +264,7 @@ test("protocol: listing SLA is snapshotted onto the deal and honored at pay", as
   await post(`/api/deals/loop-sla-2/moves`, { key: "sla2-o", kind: "OFFER", price: 50 }, { agentKey: cKey });
   await post(`/api/deals/loop-sla-2/moves`, { key: "sla2-a", kind: "ACCEPT", price: 50 }, { agentKey: sellerKey });
   const before2 = Date.now();
-  const [ps2] = await post(`/api/deals/loop-sla-2/pay`, {}, { agentKey: cKey });
+  const [ps2] = await post(`/api/deals/loop-sla-2/pay`, { tx_hash: TX }, { agentKey: cKey });
   assert.equal(ps2, 200);
   const [, detail2] = await get("/api/deals/loop-sla-2", cKey);
   const stamp2 = Date.parse(detail2.result.verdict.timestamps.delivery_expires);
@@ -245,7 +284,7 @@ test("protocol: verdict block reports ISO-8601 states on live deals", async () =
   assert.match(opened.result.verdict.timestamps.created, /^\d{4}-\d{2}-\d{2}T/);
   await post(`/api/deals/loop-mine/moves`, { key: "v-o", kind: "OFFER", price: 40 }, { agentKey: aKey });
   await post(`/api/deals/loop-mine/moves`, { key: "v-a", kind: "ACCEPT", price: 40 }, { agentKey: bKey });
-  await post(`/api/deals/loop-mine/pay`, {}, { agentKey: aKey });
+  await post(`/api/deals/loop-mine/pay`, { tx_hash: TX }, { agentKey: aKey });
   await post(`/api/deals/loop-mine/delivery`, { id: "v-d1", deliveryUrl: "https://video.example.com/v.mp4", capability: "video_gen" }, { agentKey: bKey });
   const [, frozen] = await get("/api/deals/loop-mine", aKey);
   assert.equal(frozen.result.deal.state, "VERIFYING");

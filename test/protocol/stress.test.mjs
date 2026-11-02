@@ -4,6 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
@@ -102,7 +108,7 @@ test("stress: ten simultaneous opens of one deal id leave exactly one winner", a
 test("stress: ten simultaneous pays allow a single capture", async () => {
   await toAgreed("race-pay", 60);
   const attempts = await Promise.all(
-    Array.from({ length: 10 }, () => post("/api/deals/race-pay/pay", {}, freshKey(), buyerKey)),
+    Array.from({ length: 10 }, () => post("/api/deals/race-pay/pay", { tx_hash: TX }, freshKey(), buyerKey)),
   );
   const won = attempts.filter(([s]) => s === 200);
   const lost = attempts.filter(([s, b]) => s === 409 && b.error.code === "ALREADY_LOCKED");
@@ -116,7 +122,7 @@ test("stress: ten simultaneous pays allow a single capture", async () => {
 
 test("stress: delivery is seller-only", async () => {
   await toAgreed("role-deliver", 40);
-  assert.equal((await post("/api/deals/role-deliver/pay", {}, freshKey(), buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/role-deliver/pay", { tx_hash: TX }, freshKey(), buyerKey))[0], 200);
   const [s, b] = await post(
     "/api/deals/role-deliver/delivery",
     { id: "d1", deliveryUrl: "deliverable:buyer-sneak" },
@@ -134,7 +140,7 @@ test("stress: pay is buyer-only", async () => {
   assert.equal(b.error.code, "FORBIDDEN");
   assert.match(b.error.message, /only the buyer/);
   // The seller's attempt captured nothing: the buyer still can.
-  assert.equal((await post("/api/deals/role-pay/pay", {}, freshKey(), buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/role-pay/pay", { tx_hash: TX }, freshKey(), buyerKey))[0], 200);
 });
 
 test("stress: deal detail is party-scoped with an admin exception", async () => {
@@ -158,7 +164,7 @@ test("stress: state bypasses fail closed", async () => {
   // ACCEPT on SETTLED: run a full walk first (opaque deliverable settles
   // via the mock inspector, same pattern as admin stats).
   await toAgreed("role-settled", 30);
-  assert.equal((await post("/api/deals/role-settled/pay", {}, freshKey(), buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/role-settled/pay", { tx_hash: TX }, freshKey(), buyerKey))[0], 200);
   const [ds] = await post(
     "/api/deals/role-settled/delivery",
     { id: "d1", deliveryUrl: "deliverable:stress-done" },

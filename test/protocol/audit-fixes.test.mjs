@@ -8,6 +8,12 @@ import { createLedger } from "../../src/ledger.js";
 import { transition } from "../../src/deal-states.js";
 import { allowedMoves } from "../../src/menu.js";
 import { startServer } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 import { runInspection } from "../../protocol/inspector.js";
 
 process.env.NO_PROXY = "127.0.0.1,localhost";
@@ -127,7 +133,7 @@ test("audit: responses name the caller role and who is waited on", async () => {
 });
 
 test("audit: GET deal shows the locked escrow amount", async () => {
-  await post("/api/deals/ad-2/pay", {}, buyerKey);
+  await post("/api/deals/ad-2/pay", { tx_hash: TX }, buyerKey);
   const [, detail] = await get("/api/deals/ad-2", buyerKey);
   assert.equal(detail.result.escrow, 50);
   const [, neg] = await get("/api/deals/ad-1", buyerKey);
@@ -172,7 +178,7 @@ async function setupFrozenDeal(tag, price) {
   assert.equal((await post("/api/deals", { id: dealId, buyer, seller, price }, buyerKey))[0], 200);
   assert.equal((await post(`/api/deals/${dealId}/moves`, { key: "k1", kind: "OFFER", price }, buyerKey))[0], 200);
   assert.equal((await post(`/api/deals/${dealId}/moves`, { key: "k2", kind: "ACCEPT", price }, sellerKey))[0], 200);
-  assert.equal((await post(`/api/deals/${dealId}/pay`, {}, buyerKey))[0], 200);
+  assert.equal((await post(`/api/deals/${dealId}/pay`, { tx_hash: TX }, buyerKey))[0], 200);
   await suspend(seller);
   assert.equal((await post(`/api/deals/${dealId}/delivery`, { id: `${tag}-del`, dealId, deliveryUrl: "deliverable:x" }, sellerKey))[0], 202);
   assert.equal(await pollFrozen(dealId, buyerKey), true, "inspection froze the deal");
@@ -258,7 +264,7 @@ test("audit: GET /api/me reflects live ledger balance, not registration-time bal
     assert.deepEqual((await get("/api/me", buyerKey))[1].result.balance, 0);
     assert.deepEqual((await get("/api/me", buyerKey))[1].result.locked, 60);
     // Settle: escrow releases to the seller, buyer stays spent.
-    assert.equal((await post("/api/deals/me-deal/pay", {}, buyerKey))[0], 200);
+    assert.equal((await post("/api/deals/me-deal/pay", { tx_hash: TX }, buyerKey))[0], 200);
     assert.equal((await post("/api/deals/me-deal/delivery", { id: "me-del", dealId: "me-deal", deliveryUrl: "deliverable:x" }, sellerKey))[0], 202);
     assert.equal(await pollState("me-deal", buyerKey, "SETTLED"), true, "deal settled");
     assert.deepEqual((await get("/api/me", sellerKey))[1].result.balance, 60);
@@ -286,12 +292,58 @@ test("audit: every allowedMoves entry maps to a concrete endpoint", async () => 
   const [, agreed] = await get("/api/deals/am-deal", buyerKey);
   assert.ok(agreed.allowedMoves.buyer.includes("PAY"));
   assert.deepEqual(agreed.result.actions.PAY, { method: "POST", path: "/api/deals/:id/pay", body: null });
-  assert.equal((await post("/api/deals/am-deal/pay", {}, buyerKey))[0], 200);
+  assert.equal((await post("/api/deals/am-deal/pay", { tx_hash: TX }, buyerKey))[0], 200);
   const [, locked] = await get("/api/deals/am-deal", sellerKey);
   assert.ok(locked.allowedMoves.seller.includes("DELIVER"));
   assert.deepEqual(locked.result.actions.DELIVER, { method: "POST", path: "/api/deals/:id/delivery", body: "{ id, deliveryUrl, capability? }" });
   for (const kind of ["OFFER", "ACCEPT", "WALK"]) {
     assert.equal(locked.result.actions[kind].path, "/api/deals/:id/moves", kind);
+  }
+});
+
+async function adminGet(p) {
+  const res = await fetch(url + p, {
+    headers: { authorization: `Bearer ${process.env.ADMIN_SECRET}`, "idempotency-key": freshKey() },
+  });
+  return [res.status, await res.json()];
+}
+
+test("audit: admin money endpoint reports live ledger per deal", async () => {
+  const saved = process.env.MODEL_API_KEY;
+  delete process.env.MODEL_API_KEY;
+  try {
+    const buyerKey = (await post("/api/agents", { id: "dm-buyer", role: "buyer" }))[1].result.api_key;
+    const sellerKey = (await post("/api/agents", { id: "dm-seller", role: "seller" }))[1].result.api_key;
+    await approve("dm-buyer");
+    await approve("dm-seller");
+    // Unknown deal 404s; the admin gate 401s without a Bearer.
+    assert.equal((await adminGet("/api/admin/deals/no-such-deal/money"))[0], 404);
+    const [unauth] = await get("/api/admin/deals/no-such-deal/money");
+    assert.equal(unauth, 401);
+    assert.equal((await post("/api/deals", { id: "dm-deal", buyer: "dm-buyer", seller: "dm-seller", price: 60 }, buyerKey))[0], 200);
+    // Deposit-on-open funds the buyer: 0 -> 60, nothing locked, no escrow.
+    let [, m] = await adminGet("/api/admin/deals/dm-deal/money");
+    assert.deepEqual(m.result, { dealId: "dm-deal", buyer: { balance: 60, locked: 0 }, seller: { balance: 0, locked: 0 }, escrow: null });
+    assert.equal((await post("/api/deals/dm-deal/moves", { key: "k1", kind: "OFFER", price: 60 }, buyerKey))[0], 200);
+    assert.equal((await post("/api/deals/dm-deal/moves", { key: "k2", kind: "ACCEPT", price: 60 }, sellerKey))[0], 200);
+    // ACCEPT moves the 60 into escrow: balance back to 0, locked 60.
+    [, m] = await adminGet("/api/admin/deals/dm-deal/money");
+    assert.deepEqual(m.result.buyer, { balance: 0, locked: 60 });
+    assert.deepEqual(m.result.escrow, 60);
+    assert.equal((await post("/api/deals/dm-deal/pay", { tx_hash: TX }, buyerKey))[0], 200);
+    [, m] = await adminGet("/api/admin/deals/dm-deal/money");
+    assert.deepEqual(m.result.buyer, { balance: 0, locked: 60 });
+    assert.deepEqual(m.result.escrow, 60);
+    assert.equal((await post("/api/deals/dm-deal/delivery", { id: "dm-del", dealId: "dm-deal", deliveryUrl: "deliverable:x" }, sellerKey))[0], 202);
+    // No VERIFYING-moment read here: the background inspector settles mock
+    // deliveries in microseconds, so escrow may already be released. The
+    // frozen-deal tests above pin escrow visibility while VERIFYING.
+    assert.equal(await pollState("dm-deal", buyerKey, "SETTLED"), true, "deal settled");
+    [, m] = await adminGet("/api/admin/deals/dm-deal/money");
+    assert.deepEqual(m.result, { dealId: "dm-deal", buyer: { balance: 0, locked: 0 }, seller: { balance: 60, locked: 0 }, escrow: null });
+  } finally {
+    if (saved === undefined) delete process.env.MODEL_API_KEY;
+    else process.env.MODEL_API_KEY = saved;
   }
 });
 

@@ -4,6 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
@@ -124,7 +130,7 @@ test("protocol: admin stats track active, settled, and rejected deals", async ()
   await post("/api/deals", { id: "b-set", buyer: "buyer", seller: "seller", price: 30 });
   await post("/api/deals/b-set/moves", { key: "k1", kind: "OFFER", price: 30 });
   await post("/api/deals/b-set/moves", { key: "k2", kind: "ACCEPT", price: 20 });
-  await post("/api/deals/b-set/pay", {});
+  await post("/api/deals/b-set/pay", { tx_hash: TX });
   const [bs, bb] = await post("/api/deals/b-set/delivery", { id: "b-del-1", dealId: "b-set", deliveryUrl: "deliverable:b" }, freshKey(), sellerKey);
   assert.equal(bs, 202);
   assert.equal(bb.state, "VERIFYING");
@@ -134,7 +140,7 @@ test("protocol: admin stats track active, settled, and rejected deals", async ()
   await post("/api/deals", { id: "c-rej", buyer: "buyer", seller: "seller", price: 20 });
   await post("/api/deals/c-rej/moves", { key: "k1", kind: "OFFER", price: 20 });
   await post("/api/deals/c-rej/moves", { key: "k2", kind: "ACCEPT", price: 10 });
-  await post("/api/deals/c-rej/pay", {});
+  await post("/api/deals/c-rej/pay", { tx_hash: TX });
   const [rs, rb] = await post("/api/deals/c-rej/delivery", { id: "c-del-1", dealId: "c-rej", deliveryUrl: "deliverable:reject-me" }, freshKey(), sellerKey);
   assert.equal(rs, 202);
   assert.equal(rb.state, "VERIFYING");
@@ -242,7 +248,7 @@ test("protocol: approving an agent publishes it to the marketplace", async () =>
   assert.ok(typeof body.result.api_key === "string" && body.result.api_key.length > 0);
   const [, listed] = await get("/api/agents");
   const row = listed.result.agents.find((a) => a.id === "pending1");
-  assert.deepEqual(row, { id: "pending1", role: "seller", capability: "Video editing", title: null, description: null, price: null, category: null, service_type: "negotiation", min_price: null, skills: [], metadata: null });
+  assert.deepEqual(row, { id: "pending1", role: "seller", capability: "Video editing", title: null, description: null, price: null, category: null, service_type: "negotiation", min_price: null, skills: [], metadata: null, input_schema: { type: "object", properties: { prompt: { type: "string" } } } });
   const [, status] = await get("/api/agents/pending1/status");
   assert.deepEqual(status.result, { status: "ACTIVE", status_reason: "verified seller" });
   const [, agents] = await aget("/api/admin/agents");
@@ -311,6 +317,7 @@ test("protocol: a full listing is stored and listed after approval", async () =>
     min_price: null,
     skills: [],
     metadata: null,
+    input_schema: { type: "object", properties: { prompt: { type: "string" } } },
   });
 });
 

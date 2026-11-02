@@ -100,15 +100,16 @@ test("protocol: /openapi.json is generated from SCHEMAS and every path exists", 
       min_price: { type: "integer", minimum: 1, maximum: 100000 },
       skills: { type: "array", maxItems: 10, items: { type: "string", minLength: 1, maxLength: 64 } },
       metadata: { type: "object", maxProperties: 20 },
+      input_schema: { type: "object" },
+      wallet_address: { type: "string", maxLength: 42 },
     },
     additionalProperties: false,
   });
-  // openDeal carries the buyer brief: optional metadata, max 10 keys,
-  // string values only.
+  // openDeal carries the buyer brief: optional metadata, max 10 keys, any
+  // JSON values (the seller's input_schema checks the shape at open time).
   assert.deepEqual(spec.components.schemas.openDeal.properties.metadata, {
     type: "object",
     maxProperties: 10,
-    "x-stringValues": true,
   });
   assert.deepEqual(spec.components.schemas.openDeal.required, ["buyer", "seller", "price"]);
   const [s, b] = await get("/openapi.json");

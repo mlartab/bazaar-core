@@ -4,6 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer, pruneIdempotency, pruneRegAttempts, capRegAttempts, REG_ATTEMPT_WINDOW_MS, MAX_REG_IPS } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 import { EVENT_CAP, IDEMPOTENCY_TTL_MS } from "../../protocol/config.js";
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
@@ -172,7 +178,7 @@ test("protocol: delivery is seller-only", async () => {
   assert.equal(o1, 200);
   const [a1] = await post("/api/deals/auth-d2/moves", { key: "k2", kind: "ACCEPT", price: 50 }, { agentKey: sellerKey });
   assert.equal(a1, 200);
-  const [p1, p1b] = await post("/api/deals/auth-d2/pay", {}, { agentKey: buyerKey });
+  const [p1, p1b] = await post("/api/deals/auth-d2/pay", { tx_hash: TX }, { agentKey: buyerKey });
   assert.equal(p1, 200);
   assert.equal(p1b.state, "ESCROW_LOCKED");
   const [bs, bb] = await post(
@@ -275,7 +281,7 @@ test("protocol: duplicate delivery ids return a 409 contract error, never intern
     assert.equal(o1, 200);
     const [a1] = await post(`/api/deals/${id}/moves`, { key: "k2", kind: "ACCEPT", price: 30 }, { agentKey: sellerKey });
     assert.equal(a1, 200);
-    const [p1] = await post(`/api/deals/${id}/pay`, {}, { agentKey: buyerKey });
+    const [p1] = await post(`/api/deals/${id}/pay`, { tx_hash: TX }, { agentKey: buyerKey });
     assert.equal(p1, 200);
   };
   await setup("auth-dup1");

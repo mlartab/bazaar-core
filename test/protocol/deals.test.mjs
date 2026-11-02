@@ -4,6 +4,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
@@ -92,7 +98,7 @@ before(async () => {
   await post("/api/deals", { id: "pg-lock", buyer: "list-buyer", seller: "list-seller", price: 60 }, buyerKey);
   await post("/api/deals/pg-lock/moves", { key: "k1", kind: "OFFER", price: 60 }, buyerKey);
   await post("/api/deals/pg-lock/moves", { key: "k2", kind: "ACCEPT", price: 50 }, sellerKey);
-  await post("/api/deals/pg-lock/pay", {}, buyerKey);
+  await post("/api/deals/pg-lock/pay", { tx_hash: TX }, buyerKey);
   await post("/api/deals", { id: "pg-rival", buyer: "list-rival", seller: "list-seller", price: 10 }, rivalKey);
 });
 

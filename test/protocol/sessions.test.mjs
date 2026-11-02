@@ -9,6 +9,12 @@ import { DELIVERY_TIMEOUT_MS, INSPECTION_TIMEOUT_MS } from "../../protocol/confi
 import { createSessionManager } from "../../protocol/session-manager.js";
 import { createLedger, deposit, lock } from "../../src/ledger.js";
 import { startServer } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
@@ -347,7 +353,7 @@ test("protocol: restart with a VERIFYING deal rebuilds the lock so the sweep can
     assert.equal((await post(first.url, "/api/deals", { id: "d-restart-verify", buyer: "rv-buyer", seller: "rv-seller", price: 50 }, buyerKey))[0], 200);
     assert.equal((await post(first.url, "/api/deals/d-restart-verify/moves", { key: "k1", kind: "OFFER", price: 50 }, buyerKey))[0], 200);
     assert.equal((await post(first.url, "/api/deals/d-restart-verify/moves", { key: "k2", kind: "ACCEPT", price: 40 }, sellerKey))[0], 200);
-    assert.equal((await post(first.url, "/api/deals/d-restart-verify/pay", {}, buyerKey))[0], 200);
+    assert.equal((await post(first.url, "/api/deals/d-restart-verify/pay", { tx_hash: TX }, buyerKey))[0], 200);
     // image_gen with an unfetchable reference: the local checker records
     // INCONCLUSIVE, so the escrow freezes in VERIFYING by design.
     const [ds, db] = await post(first.url, "/api/deals/d-restart-verify/delivery", { id: "rv-del-1", dealId: "d-restart-verify", deliveryUrl: "deliverable:pending", capability: "image_gen" }, sellerKey);

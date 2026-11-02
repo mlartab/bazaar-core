@@ -84,7 +84,8 @@ test("protocol: schemas accept a valid request for each endpoint", () => {
   assert.deepEqual(validate("pay", {}), { ok: true });
 });
 
-test("protocol: schemas reject any field on pay", () => {
+test("protocol: pay accepts only an optional tx_hash", () => {
+  assert.deepEqual(validate("pay", { tx_hash: "0xabc" }), { ok: true });
   assert.equal(invalid("pay", { fee: 1 }).field, "fee");
 });
 
@@ -159,17 +160,17 @@ test("protocol: patchAgent accepts partial edits and rejects unknowns", () => {
   assert.equal(validate("patchAgent", { api_key: "x" }).code, "INVALID_SCHEMA");
 });
 
-test("protocol: openDeal accepts optional string-valued metadata", () => {
+test("protocol: openDeal accepts optional metadata with any JSON values", () => {
   const base = { buyer: "b", seller: "s", price: 50 };
-  // Absent stays valid; a small flat string map validates.
+  // Absent stays valid; small flat maps validate, including structured
+  // briefs — the seller's input_schema checks the shape at open time.
   assert.deepEqual(validate("openDeal", base), { ok: true });
   assert.deepEqual(validate("openDeal", { ...base, metadata: { prompt: "paint a mural" } }), { ok: true });
-  // Non-objects, non-string values, and more than 10 keys fail.
+  assert.deepEqual(validate("openDeal", { ...base, metadata: { colors: ["red"], count: 3 } }), { ok: true });
+  // Non-objects and more than 10 keys still fail.
   const invalidMeta = (metadata) => validate("openDeal", { ...base, metadata });
   assert.equal(invalidMeta("paint it").field, "metadata");
   assert.equal(invalidMeta(["prompt"]).field, "metadata");
-  assert.equal(invalidMeta({ prompt: 42 }).field, "metadata");
-  assert.equal(invalidMeta({ prompt: null }).field, "metadata");
   assert.equal(
     invalidMeta(Object.fromEntries(Array(11).fill(0).map((_, i) => [`k${i}`, "v"]))).field,
     "metadata",

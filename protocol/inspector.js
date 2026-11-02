@@ -12,6 +12,7 @@
 
 import { transition } from "../src/deal-states.js";
 import { settle, refund } from "../src/ledger.js";
+import { crToUsdc, releaseFunds } from "./wallet.js";
 import { isKnownCapability, inspectImageLocally, inspectAudioLocally } from "./capabilities.js";
 import { execute as inspectWithBrain, inspectorMode } from "./meta-brain.js";
 
@@ -204,6 +205,26 @@ export async function runInspection({ store, ledger, dealId, deliveryUrl, capabi
       (log ?? console).warn?.({ dealId, seller: deal.seller, standing }, "inspector.seller_not_active");
       emit?.({ type: "SETTLEMENT_FROZEN", dealId, seller: deal.seller, standing });
       return { ok: false, code: "SELLER_NOT_ACTIVE", message: `seller ${deal.seller} is ${standing}; settlement frozen` };
+    }
+    // Real payout first: the escrow wallet releases deal.price worth of
+    // USDC to the seller's registered wallet before anything is marked
+    // SETTLED. Idempotent: a recorded payout_tx_hash is reused, never
+    // re-broadcast, so a crash between broadcast and state flip cannot
+    // double-pay on retry. Sellers without a wallet settle ledger-only.
+    // Any broadcast failure freezes the deal — never settle what wasn't paid.
+    let payoutTx = store.getDealRow(dealId)?.payout_tx_hash ?? null;
+    const sellerWallet = store.getAgentDetail?.(deal.seller)?.wallet_address ?? null;
+    if (payoutTx === null && typeof sellerWallet === "string" && sellerWallet.length > 0) {
+      try {
+        payoutTx = await releaseFunds(sellerWallet, crToUsdc(deal.price));
+      } catch (err) {
+        (log ?? console).error?.({ dealId, err }, "inspector.payout_failed");
+        return { ok: false, code: "PAYOUT_FAILED", message: "on-chain payout failed; escrow stays locked" };
+      }
+      if (typeof payoutTx !== "string" || payoutTx.length === 0) {
+        return { ok: false, code: "PAYOUT_FAILED", message: "on-chain payout failed; escrow stays locked" };
+      }
+      store.setDealPayoutTx(dealId, payoutTx);
     }
     const paid = settle(ledger, dealId, deal.seller);
     if (!paid.ok) {

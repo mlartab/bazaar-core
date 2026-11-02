@@ -4,7 +4,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startServer } from "../../protocol/server.js";
+import { setWalletOverrides } from "../../protocol/wallet.js";
 import { MENU } from "../../src/menu.js";
+
+// Chain verification is mocked in-process: the pay handler calls the
+// override instead of Base Sepolia, so these tests stay deterministic.
+const TX = `0x${"ab".repeat(32)}`;
+setWalletOverrides({ verifyTransaction: async () => true, releaseFunds: async () => "0x_mock_payout_tx" });
 
 // The sandbox sets HTTP(S)_PROXY for external traffic; loopback test
 // traffic must bypass it or fetch tunnels 127.0.0.1 through the proxy.
@@ -258,7 +264,7 @@ test("protocol: server accepts delivery with 202 and the inspector settles", asy
   await post("/api/deals", { id: "d-settle", buyer: "buyer", seller: "seller", price: 50 });
   await post("/api/deals/d-settle/moves", { key: "k1", kind: "OFFER", price: 50 });
   await post("/api/deals/d-settle/moves", { key: "k2", kind: "ACCEPT", price: 40 });
-  await post("/api/deals/d-settle/pay", {});
+  await post("/api/deals/d-settle/pay", { tx_hash: TX });
   // Delivery is seller-only: the submit carries the seller's key.
   const [status, body] = await post(
     "/api/deals/d-settle/delivery",
@@ -282,7 +288,7 @@ test("protocol: delivery walks every hop with one STATE event each", async () =>
   await post("/api/deals", { id: "d-walk", buyer: "buyer", seller: "seller", price: 50 });
   await post("/api/deals/d-walk/moves", { key: "k1", kind: "OFFER", price: 50 });
   await post("/api/deals/d-walk/moves", { key: "k2", kind: "ACCEPT", price: 40 });
-  await post("/api/deals/d-walk/pay", {});
+  await post("/api/deals/d-walk/pay", { tx_hash: TX });
   const [status] = await post(
     "/api/deals/d-walk/delivery",
     { id: "del-walk", dealId: "d-walk", deliveryUrl: "deliverable:walk" },
@@ -320,7 +326,7 @@ test("protocol: server rejects a duplicate delivery id with 409, not a 500", asy
   await post("/api/deals", { id: "d-dupdel", buyer: "buyer", seller: "seller", price: 50 });
   await post("/api/deals/d-dupdel/moves", { key: "k1", kind: "OFFER", price: 50 });
   await post("/api/deals/d-dupdel/moves", { key: "k2", kind: "ACCEPT", price: 40 });
-  await post("/api/deals/d-dupdel/pay", {});
+  await post("/api/deals/d-dupdel/pay", { tx_hash: TX });
   const first = { id: "del-dup", dealId: "d-dupdel", deliveryUrl: "deliverable:dup" };
   const [s1] = await post("/api/deals/d-dupdel/delivery", first, freshKey(), sellerKey);
   assert.equal(s1, 202);
@@ -329,7 +335,7 @@ test("protocol: server rejects a duplicate delivery id with 409, not a 500", asy
   await post("/api/deals", { id: "d-dupdel-b", buyer: "buyer", seller: "seller", price: 50 });
   await post("/api/deals/d-dupdel-b/moves", { key: "k1", kind: "OFFER", price: 50 });
   await post("/api/deals/d-dupdel-b/moves", { key: "k2", kind: "ACCEPT", price: 40 });
-  await post("/api/deals/d-dupdel-b/pay", {});
+  await post("/api/deals/d-dupdel-b/pay", { tx_hash: TX });
   const [s2, b2] = await post(
     "/api/deals/d-dupdel-b/delivery",
     { id: "del-dup", dealId: "d-dupdel-b", deliveryUrl: "deliverable:dup" },
@@ -414,4 +420,104 @@ test("protocol: agent discovery filters by skill, service_type, and max_price", 
   assert.equal((await fetch(url + "/api/agents?service_type=auction")).status, 400);
   assert.equal((await fetch(url + "/api/agents?max_price=abc")).status, 400);
   assert.equal((await fetch(url + "/api/agents?max_price=0")).status, 400);
+});
+
+test("protocol: deal creation validates against the seller's input_schema", async () => {
+  const [s, b] = await post("/api/agents", {
+    id: "schema-seller",
+    role: "seller",
+    input_schema: { company_name: "string", colors: "array" },
+  });
+  assert.equal(s, 200);
+  assertOk(b);
+  await approve("schema-seller");
+  // An empty brief is missing every required field.
+  const [badStatus, badBody] = await post("/api/deals", {
+    id: "d-schema-check-empty",
+    buyer: "buyer",
+    seller: "schema-seller",
+    price: 50,
+    metadata: {},
+  });
+  assert.equal(badStatus, 400);
+  assertErr(badBody, "INVALID_SCHEMA");
+  // A brief satisfying the schema opens the deal.
+  const [goodStatus, goodBody] = await post("/api/deals", {
+    id: "d-schema-check-valid",
+    buyer: "buyer",
+    seller: "schema-seller",
+    price: 50,
+    metadata: { company_name: "Acme", colors: ["red", "blue"] },
+  });
+  assert.equal(goodStatus, 200);
+  assertOk(goodBody);
+});
+
+test("protocol: mcp tools endpoint lists the tool schemas", async () => {
+  const res = await fetch(`${url}/api/mcp/tools`);
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.ok(Array.isArray(body.tools));
+  const byName = Object.fromEntries(body.tools.map((t) => [t.name, t]));
+  assert.deepEqual(Object.keys(byName).sort(), [
+    "bazaar_deliver_work",
+    "bazaar_open_deal",
+    "bazaar_pay_deal",
+    "bazaar_search_marketplace",
+  ]);
+  assert.deepEqual(byName.bazaar_search_marketplace.inputSchema.properties, { skill: { type: "string" } });
+  assert.deepEqual(byName.bazaar_open_deal.inputSchema.properties, {
+    seller_id: { type: "string" },
+    price: { type: "number" },
+    metadata: { type: "object" },
+  });
+  assert.match(byName.bazaar_open_deal.description, /MUST strictly match the seller's input_schema/);
+  assert.deepEqual(byName.bazaar_pay_deal.inputSchema.properties, {
+    deal_id: { type: "string" },
+    tx_hash: { type: "string" },
+  });
+  assert.deepEqual(byName.bazaar_deliver_work.inputSchema.properties, {
+    deal_id: { type: "string" },
+    delivery_url: { type: "string" },
+  });
+});
+
+test("protocol: mcp execute runs search and open_deal", async () => {
+  const [s, b] = await post("/api/agents", {
+    id: "mcp-seller",
+    role: "seller",
+    skills: ["mcp-craft"],
+    input_schema: { company_name: "string", colors: "array" },
+  });
+  assert.equal(s, 200);
+  assertOk(b);
+  await approve("mcp-seller");
+  const mcp = async (tool, args) => {
+    const [status, body] = await post("/api/mcp/execute", { tool, arguments: args });
+    assert.ok(Array.isArray(body.content));
+    assert.equal(body.content[0].type, "text");
+    return [status, JSON.parse(body.content[0].text)];
+  };
+  const [searchStatus, searchResult] = await mcp("bazaar_search_marketplace", { skill: "mcp-craft" });
+  assert.equal(searchStatus, 200);
+  assert.equal(searchResult.ok, true);
+  assert.ok(searchResult.result.agents.some((a) => a.id === "mcp-seller"));
+  const [openStatus, openResult] = await mcp("bazaar_open_deal", {
+    seller_id: "mcp-seller",
+    price: 60,
+    metadata: { company_name: "Acme", colors: ["red"] },
+  });
+  assert.equal(openStatus, 200);
+  assert.equal(openResult.ok, true);
+  assert.equal(openResult.state, "NEGOTIATING");
+});
+
+test("protocol: mcp execute rejects metadata outside the seller schema", async () => {
+  const [status, body] = await post("/api/mcp/execute", {
+    tool: "bazaar_open_deal",
+    arguments: { seller_id: "mcp-seller", price: 60, metadata: {} },
+  });
+  assert.equal(status, 400);
+  const result = JSON.parse(body.content[0].text);
+  assertErr(result, "INVALID_SCHEMA");
 });
