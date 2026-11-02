@@ -153,6 +153,13 @@ export const SCHEMAS = {
   rotateKey: {
     fields: {},
   },
+  authVerify: {
+    fields: {
+      message: { type: "string", required: true, nonEmpty: true },
+      signature: { type: "string", required: true, nonEmpty: true },
+      wallet_address: { type: "string", required: true, nonEmpty: true, maxLength: 42 },
+    },
+  },
   graduateAgent: {
     fields: {},
   },

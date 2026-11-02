@@ -612,3 +612,75 @@ $("my-deals-toggle").addEventListener("click", () => {
 
 load();
 loadMyDeals();
+
+// Unified Identity Layer (SIWE): wallet sign-in that resolves to the
+// existing x-agent-key. Overwrites the auto-provisioned guest identity so
+// every later deal call authenticates as the wallet-linked agent.
+function truncateAddress(address) {
+  return `${address.slice(0, 4)}...${address.slice(-2)}`;
+}
+
+function paintWalletButton() {
+  const btn = $("connect-wallet");
+  if (btn === null) return;
+  try {
+    const stored = JSON.parse(localStorage.getItem(BUYER_KEY) ?? "null");
+    if (typeof stored?.wallet === "string" && stored.wallet.startsWith("0x")) {
+      btn.textContent = truncateAddress(stored.wallet);
+      btn.disabled = true;
+    }
+  } catch {
+    // Corrupt entry: leave the button active.
+  }
+}
+
+async function connectWallet() {
+  const btn = $("connect-wallet");
+  if (typeof window.ethereum === "undefined" || window.ethereum === null) {
+    toast("No wallet found. Install MetaMask to sign in.");
+    return;
+  }
+  try {
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    const walletAddress = Array.isArray(accounts) ? accounts[0] : null;
+    if (typeof walletAddress !== "string" || walletAddress === "") {
+      toast("No account selected.");
+      return;
+    }
+    const nonceRes = await fetch(`/api/auth/nonce?wallet_address=${encodeURIComponent(walletAddress)}`);
+    const nonceData = await nonceRes.json();
+    if (!nonceRes.ok || nonceData.ok !== true) {
+      throw new Error(`${nonceData.error?.code ?? nonceRes.status}: ${nonceData.error?.message ?? "nonce failed"}`);
+    }
+    const message = nonceData.result.message;
+    const signature = await window.ethereum.request({ method: "personal_sign", params: [message, walletAddress] });
+    const verifyRes = await fetch("/api/auth/verify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message, signature, wallet_address: walletAddress }),
+    });
+    const verifyData = await verifyRes.json();
+    if (!verifyRes.ok || verifyData.ok !== true) {
+      throw new Error(`${verifyData.error?.code ?? verifyRes.status}: ${verifyData.error?.message ?? "verify failed"}`);
+    }
+    try {
+      localStorage.setItem(BUYER_KEY, JSON.stringify({ id: verifyData.result.agent_id, key: verifyData.result.api_key, wallet: walletAddress }));
+    } catch {
+      // Blocked storage: session still works until reload.
+    }
+    if (btn !== null) {
+      btn.textContent = truncateAddress(walletAddress);
+      btn.disabled = true;
+    }
+    toast(`Signed in as ${truncateAddress(walletAddress)}.`);
+    await loadMyDeals().catch(() => {});
+  } catch (err) {
+    toast(err?.message ?? String(err));
+  }
+}
+
+{
+  const btn = document.getElementById("connect-wallet");
+  if (btn !== null) btn.addEventListener("click", connectWallet);
+  paintWalletButton();
+}

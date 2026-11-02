@@ -21,6 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import helmet from "helmet";
+import { verifyMessage } from "viem";
 import { logger } from "./logger.js";
 import { openStore } from "./db.js";
 import { createSessionManager } from "./session-manager.js";
@@ -33,6 +34,25 @@ import { buildOpenApi, buildLlmsTxt, buildAgentJson } from "./openapi.js";
 // Deterministic auto key for headerless POSTs: agents never handle HTTP
 // plumbing, but an identical retry within the auto window still replays
 // the cached result instead of re-executing the request.
+// Unified Identity Layer (SIWE + SIWA): in-memory single-use nonces.
+// No DB migration: entries age out via the 5-minute TTL checked on
+// lookup, plus a periodic sweep. Keyed by lowercase wallet address.
+export const AUTH_NONCE_TTL_MS = 5 * 60 * 1000;
+export const authNonces = new Map();
+export function buildAuthMessage(walletAddress, nonce) {
+  return `bazaar.local wants you to sign in with your Ethereum account:\n${walletAddress}\n\nSign in to Bazaar.\n\nNonce: ${nonce}`;
+}
+setInterval(() => {
+  try {
+    const now = Date.now();
+    for (const [key, entry] of authNonces) {
+      if (entry.expiresAt <= now) authNonces.delete(key);
+    }
+  } catch {
+    // Sweep must never crash the process.
+  }
+}, 60 * 1000)?.unref?.();
+
 export function autoIdempotencyKey(scope, url, bodyText) {
   return `auto:${createHash("sha256").update(`${scope}:${url}:${bodyText}`).digest("hex")}`;
 }
@@ -784,6 +804,60 @@ export function createApp(dbPath) {
           },
         },
       ];
+    },
+
+    // Unified Identity Layer (SIWE for humans via MetaMask, SIWA for
+    // programmatic agents): keyless nonce + verify pair that hands out the
+    // existing x-agent-key. The key system itself is untouched; this only
+    // mints or retrieves it via a wallet signature.
+    "GET /api/auth/nonce": (_body, _id, _agent, query = {}) => {
+      const walletAddress = typeof query?.wallet_address === "string" ? query.wallet_address : "";
+      if (!/^0x[0-9a-fA-F]{40}$/.test(walletAddress)) {
+        return [400, error("INVALID_SCHEMA", "field wallet_address must be a 0x-prefixed 20-byte address")];
+      }
+      const nonce = randomUUID();
+      const message = buildAuthMessage(walletAddress, nonce);
+      authNonces.set(walletAddress.toLowerCase(), { nonce, message, expiresAt: Date.now() + AUTH_NONCE_TTL_MS });
+      return [200, { ok: true, state: null, allowedMoves: [], result: { nonce, message } }];
+    },
+
+    "POST /api/auth/verify": async (body) => {
+      const checked = validateSchema("authVerify", body);
+      if (!checked.ok) return [400, toContractError(checked)];
+      const walletAddress = body.wallet_address;
+      if (!/^0x[0-9a-fA-F]{40}$/.test(walletAddress)) {
+        return [400, error("INVALID_SCHEMA", "field wallet_address must be a 0x-prefixed 20-byte address")];
+      }
+      const key = walletAddress.toLowerCase();
+      const entry = authNonces.get(key);
+      if (entry === undefined || entry.expiresAt <= Date.now() || entry.message !== body.message) {
+        if (entry !== undefined && entry.expiresAt <= Date.now()) authNonces.delete(key);
+        return [401, error("UNAUTHORIZED", "missing or expired nonce; request a fresh one")];
+      }
+      let valid = false;
+      try {
+        valid = await verifyMessage({ address: walletAddress, message: body.message, signature: body.signature });
+      } catch {
+        valid = false;
+      }
+      if (!valid) {
+        return [401, error("UNAUTHORIZED", "signature verification failed")];
+      }
+      // Single-use: consume before any further work so a replay fails.
+      authNonces.delete(key);
+      const existing = store.getAgentByWallet(walletAddress);
+      if (existing !== null) {
+        return [200, { ok: true, state: null, allowedMoves: [], result: { api_key: existing.api_key, agent_id: existing.id } }];
+      }
+      const agentId = `wallet-${walletAddress.toLowerCase()}`;
+      if (store.getAgent(agentId) !== null) {
+        return [200, { ok: true, state: null, allowedMoves: [], result: { api_key: store.getAgentApiKey(agentId), agent_id: agentId } }];
+      }
+      const apiKey = randomUUID();
+      store.saveAgent({ id: agentId, role: "buyer", balance: 0, status: "ACTIVE", api_key: apiKey, wallet_address: walletAddress });
+      ensureAccount(agentId);
+      emit({ type: "AGENT_REGISTERED", agentId, role: "buyer" });
+      return [200, { ok: true, state: null, allowedMoves: [], result: { api_key: apiKey, agent_id: agentId } }];
     },
 
     // Legacy alias: early clients sent speech_transcription; the canonical

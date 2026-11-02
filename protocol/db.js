@@ -373,6 +373,12 @@ export function openStore(path) {
       if (typeof key !== "string" || key.length === 0) return null;
       return get("SELECT id, role, balance FROM agents WHERE api_key = ?", [key]) ?? null;
     },
+    // Wallet lookup for SIWE/SIWA verify: case-insensitive match on the
+    // stored payout address. Returns id + api_key for the key handoff.
+    getAgentByWallet(address) {
+      if (typeof address !== "string" || address.length === 0) return null;
+      return get("SELECT id, api_key FROM agents WHERE LOWER(wallet_address) = LOWER(?) LIMIT 1", [address]) ?? null;
+    },
     // Admin-only key recovery (approval response). Never exposed on a public
     // route: the status endpoint deliberately cannot return this.
     getAgentApiKey(id) {
