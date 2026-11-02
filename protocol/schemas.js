@@ -133,10 +133,20 @@ export const SCHEMAS = {
     fields: {
       id: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
       dealId: { type: "string", required: true, nonEmpty: true, maxLength: 128 },
-      // Opaque deliverable reference for the async AI Inspector. The server
-      // never fetches it in this slice (see inspector.js TODO); the client
-      // must never decide the verdict, so no status field is accepted here.
-      deliveryUrl: { type: "string", required: true, nonEmpty: true, maxLength: 2048 },
+      // Opaque deliverable reference for the async AI Inspector. Legacy
+      // shape: still accepted and mapped to { type: "image", uri } by the
+      // handler. New callers send `envelope` instead; at least one of the
+      // two is required (enforced in fastValidateDelivery, which can see
+      // both fields at once). The client must never decide the verdict,
+      // so no status field is accepted here.
+      deliveryUrl: { type: "string", nonEmpty: true, maxLength: 2048 },
+      // Universal Delivery Envelope: { type: "image"|"text"|"json"|
+      // "service", content, uri, hash, mime }. Nested keys are validated
+      // by the handler (this layer checks object shape only).
+      envelope: { type: "object", maxKeys: 10 },
+      // Commitment-bound privacy: when true, content never lands in SSE,
+      // logs, or admin reads — only hashes and verdicts leave the vault.
+      is_private: { type: "boolean" },
       // Optional per-delivery modality override for inspection routing.
       // Optional so every existing delivery payload keeps validating.
       capability: { type: "string", maxLength: 64 },
@@ -177,6 +187,7 @@ function matchesWhen(request, clause) {
 function checkType(rule, value) {
   if (rule.type === "string") return typeof value === "string";
   if (rule.type === "integer") return Number.isInteger(value);
+  if (rule.type === "boolean") return typeof value === "boolean";
   if (rule.type === "array") return Array.isArray(value);
   if (rule.type === "object") return typeof value === "object" && value !== null && !Array.isArray(value);
   return false;
@@ -184,6 +195,7 @@ function checkType(rule, value) {
 
 function typeName(rule) {
   if (rule.type === "integer") return "an integer";
+  if (rule.type === "boolean") return "a boolean";
   if (rule.type === "array") return "an array";
   if (rule.type === "object") return "an object";
   return "a string";

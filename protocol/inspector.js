@@ -10,11 +10,12 @@
 // log } plus the deal identity. A rejection must never crash the process;
 // the server attaches a .catch that logs and leaves the deal frozen.
 
+import { createHash } from "node:crypto";
 import { transition } from "../src/deal-states.js";
 import { settle, refund } from "../src/ledger.js";
 import { crToUsdc, releaseFunds } from "./wallet.js";
 import { isKnownCapability, inspectImageLocally, inspectAudioLocally } from "./capabilities.js";
-import { execute as inspectWithBrain, executeSAM3, inspectorMode } from "./meta-brain.js";
+import { execute as inspectWithBrain, executeSAM3, executeText as inspectWithText, inspectorMode } from "./meta-brain.js";
 
 // Capability resolution: explicit per-delivery override first, then the
 // seller's registered capability, then null (today's mock/vision path).
@@ -34,9 +35,9 @@ function resolveCapability({ store, deal, capability }) {
 // Keyless (mock) operation skips the SAM 3/Spark rungs and maps the mock
 // straight through, byte-identical to the old modelVerdict. Glimmer is a
 // dispute-only stub for now and never changes a verdict on its own.
-async function modelVerdict({ deliveryUrl, prompt, dealId, emit, log }) {
+async function modelVerdict({ deliveryUrl, prompt, dealId, emit, log, inline, extras } = {}) {
   const aiVerdict = (verdict, reason, confidence) => {
-    emit?.({ type: "AI_VERDICT", dealId, verdict, reason, confidence });
+    emit?.({ type: "AI_VERDICT", dealId, verdict, reason, confidence, ...(extras ?? {}) });
     (log ?? console).info?.({ dealId, verdict, reason, confidence }, "inspector.ai_verdict");
     return { verdict, reason, confidence };
   };
@@ -61,9 +62,10 @@ async function modelVerdict({ deliveryUrl, prompt, dealId, emit, log }) {
     return aiVerdict("INCONCLUSIVE", "SAM3_UNGROUNDED", grounding.confidence ?? 0);
   }
   // Rung 3 (Muse Spark schema/semantics): INVALID or INCONCLUSIVE freezes
-  // or refunds downstream — this rung never settles on its own.
+  // or refunds downstream — this rung never settles on its own. Inline
+  // snapshot bytes ride along so content-only envelopes skip the fetch.
   emit?.({ type: "AI_THINKING", dealId, rung: "MUSE_SPARK" });
-  const decided = await inspectWithBrain({ deliverable_url: deliveryUrl, prompt });
+  const decided = await inspectWithBrain({ deliverable_url: deliveryUrl, prompt, ...(inline !== undefined ? { image: inline } : {}) });
   // Rung 4 (Glimmer referee): dispute-only stub. No dispute signal exists
   // on this path yet, so it observes without overriding the Spark verdict.
   emit?.({ type: "AI_THINKING", dealId, rung: "GLIMMER" });
@@ -103,6 +105,96 @@ const META_TIMEOUT_MS = 15000;
 // NOTE: no egress-restricted worker yet; that is the follow-up.
 const FETCH_MAX_BYTES = 5 * 1024 * 1024;
 const FETCH_MAX_REDIRECTS = 3;
+// Service liveness budget: one plain GET per inspection, tighter than the
+// model call because liveness is a cheap pre-check, never the verdict.
+const SERVICE_TIMEOUT_MS = 5000;
+
+const ENVELOPE_TYPES = ["image", "text", "json", "service"];
+
+function sha256Hex(buf) {
+  return createHash("sha256").update(buf).digest("hex");
+}
+
+// Envelope normalization: legacy bare URLs become image envelopes so every
+// downstream rung speaks one shape. Returns { envelope } or { error } —
+// never throws, so malformed input freezes instead of crashing.
+export function normalizeEnvelope({ deliveryUrl, envelope }) {
+  if (envelope === undefined || envelope === null) {
+    if (typeof deliveryUrl !== "string" || deliveryUrl.length === 0) {
+      return { error: "MISSING_DELIVERY" };
+    }
+    return { envelope: { type: "image", uri: deliveryUrl } };
+  }
+  if (typeof envelope !== "object" || Array.isArray(envelope)) return { error: "BAD_ENVELOPE" };
+  if (!ENVELOPE_TYPES.includes(envelope.type)) return { error: "BAD_ENVELOPE_TYPE" };
+  if (envelope.type === "service" && typeof envelope.uri !== "string") return { error: "SERVICE_REQUIRES_URI" };
+  return {
+    envelope: {
+      type: envelope.type,
+      content: typeof envelope.content === "string" ? envelope.content : null,
+      uri: typeof envelope.uri === "string" ? envelope.uri : null,
+      hash: typeof envelope.hash === "string" ? envelope.hash : null,
+      mime: typeof envelope.mime === "string" ? envelope.mime : null,
+    },
+  };
+}
+
+// Mock perceptual similarity (Fuzzy Provenance demo): a real build hashes
+// normalized pixels (dHash) and gates on Hamming distance; this stub stands
+// in for that score so the rung order and telemetry can be exercised.
+// Returns 0.98 — above the 0.95 fuzzy-accept bar, below a 1.0 exact match.
+export function mockPerceptualSimilarity() {
+  return 0.98;
+}
+
+// Snapshot resolver: exactly one fetch (or zero for inline content) whose
+// bytes every rung shares — no second fetch, no TOCTOU window between
+// verify-time and settle-time bytes. Fail-closed: any doubt resolves to
+// { ok: false, code } and the caller freezes. Service envelopes resolve to
+// a liveness snapshot ({ serviceStatus, serviceBody }) instead of bytes.
+export async function resolveSnapshot(norm, signal) {
+  if (norm.type === "service") {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), SERVICE_TIMEOUT_MS);
+    try {
+      if (!isAllowedFetchUrl(norm.uri)) return { ok: false, code: "SERVICE_FORBIDDEN" };
+      const res = await fetch(norm.uri, { signal: signal ?? ctrl.signal, redirect: "manual" });
+      const bodyText = await res.text().catch(() => "").then((t) => String(t).slice(0, 8000));
+      if (!res.ok) return { ok: false, code: "SERVICE_UNHEALTHY", serviceStatus: res.status, serviceBody: bodyText };
+      return { ok: true, serviceStatus: res.status, serviceBody: bodyText, hash: sha256Hex(Buffer.from(bodyText, "utf8")) };
+    } catch {
+      return { ok: false, code: "SERVICE_UNREACHABLE" };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  let bytes = null;
+  if (norm.content !== null) {
+    // Canonical bytes: binary kinds ride base64, text kinds ride utf8.
+    // A base64 string that refuses to decode is doubt, never guessed text.
+    if (norm.type === "image" || norm.type === "video") {
+      if (!/^[A-Za-z0-9+/=\s]+$/.test(norm.content)) return { ok: false, code: "BAD_CONTENT_ENCODING" };
+      try {
+        bytes = Buffer.from(norm.content.replace(/\s+/g, ""), "base64");
+      } catch {
+        return { ok: false, code: "BAD_CONTENT_ENCODING" };
+      }
+      if (bytes.length === 0) return { ok: false, code: "EMPTY_BYTES" };
+    } else {
+      bytes = Buffer.from(norm.content, "utf8");
+      if (bytes.length === 0) return { ok: false, code: "EMPTY_BYTES" };
+    }
+  } else if (norm.uri !== null) {
+    const deliverable = await fetchDeliverable(norm.uri, signal);
+    if (deliverable === null) return { ok: false, code: "FETCH_FAILED" };
+    bytes = Buffer.from(deliverable.base64, "base64");
+  } else {
+    return { ok: false, code: "MISSING_DELIVERY" };
+  }
+  if (bytes.length > FETCH_MAX_BYTES) return { ok: false, code: "OVERSIZE" };
+  const hash = sha256Hex(bytes);
+  return { ok: true, bytes, hash, mime: norm.mime };
+}
 
 // Deterministic mock verdict for keyless operation and tests: deliverable
 // references containing reject/fail/invalid read as failed work, everything
@@ -183,11 +275,30 @@ export function parseVerdict(data) {
   return "INCONCLUSIVE";
 }
 
-export async function runInspection({ store, ledger, dealId, deliveryUrl, capability, emit, log }) {
+export async function runInspection({ store, ledger, dealId, deliveryUrl, envelope, isPrivate = false, capability, emit, log }) {
   const deal = store.getDeal(dealId);
   if (deal === null || deal.state !== "VERIFYING") {
     // Already moved (sweeper, retry, restart): nothing to decide.
     return { ok: false, code: "NOT_VERIFYING", message: `deal ${dealId} is not awaiting inspection` };
+  }
+  // Envelope path: normalize first (legacy URLs become image envelopes),
+  // then resolve one shared snapshot. A normalization failure is doubt,
+  // never a crash — the deal freezes like any inconclusive inspection.
+  const enveloped = envelope !== undefined && envelope !== null;
+  let norm = null;
+  if (enveloped) {
+    const shaped = normalizeEnvelope({ deliveryUrl, envelope });
+    if (shaped.error) {
+      (log ?? console).warn?.({ dealId, code: shaped.error }, "inspector.bad_envelope");
+      try {
+        store.setDealAi?.(dealId, { verdict: "INCONCLUSIVE", reason: shaped.error, confidence: 0 });
+      } catch {
+        // Best-effort telemetry only.
+      }
+      emit?.({ type: "INSPECTION_INCONCLUSIVE", dealId });
+      return { ok: false, code: "INCONCLUSIVE", message: "delivery envelope rejected; escrow stays locked" };
+    }
+    norm = shaped.envelope;
   }
   // Oracle routing: known modalities go local first (zero cost). text_gen
   // has no local checker yet, so it shares the default path. Unknown or
@@ -208,21 +319,143 @@ export async function runInspection({ store, ledger, dealId, deliveryUrl, capabi
     aiReason = out.reason;
     aiConfidence = out.confidence;
   };
-  if (routed !== null && routed !== "text_gen") {
-    const local = await localVerdict({ capability: routed, deliveryUrl, prompt: brief });
-    (log ?? console).info?.({ dealId, capability: routed, code: local.code }, "inspector.local");
-    verdict = local.verdict;
-    aiReason = local.code ?? "LOCAL";
-    aiConfidence = verdict === "SETTLED" ? 1 : 0;
-    // Tool escalation only: a local INCONCLUSIVE falls through to the Ladder,
-    // and only when the caller brought their own key. Keyless operation
-    // stays frozen here by design — the mock only verdicts on the default
-    // path, exactly like the old visionVerdict escalation rule.
-    if (verdict === "INCONCLUSIVE" && inspectorMode() === "meta") {
+  // Privacy-aware verdict emission: private payloads carry only the
+  // commitment hash — content, previews, and bodies never leave the vault.
+  // Public payloads may carry a short preview for the admin terminal.
+  const aiEmit = (v, reason, confidence, { preview = null, commitment = null } = {}) => {
+    const evt = { type: "AI_VERDICT", dealId, verdict: v, reason, confidence };
+    if (isPrivate) {
+      if (commitment !== null) evt.commitment = commitment;
+    } else if (preview !== null) {
+      evt.preview = preview;
+    }
+    emit?.(evt);
+    (log ?? console).info?.({ dealId, verdict: v, reason, confidence }, "inspector.ai_verdict");
+    return { verdict: v, reason, confidence };
+  };
+  const previewOf = (text) => (typeof text === "string" && text.length > 0 ? text.slice(0, 100) : null);
+  // Envelope fast lanes: text/json/service resolve from the shared snapshot
+  // without touching the URL-only rungs below. Image envelopes rejoin the
+  // ladder with snapshot bytes (no second fetch).
+  let snap = null;
+  if (norm !== null) {
+    const resolved = await resolveSnapshot(norm);
+    if (!resolved.ok) {
+      ladderOut({ verdict: "INCONCLUSIVE", reason: resolved.code, confidence: 0 });
+      try {
+        store.setDealAi?.(dealId, { verdict: "INCONCLUSIVE", reason: resolved.code, confidence: 0 });
+      } catch {
+        // Best-effort telemetry only.
+      }
+      (log ?? console).warn?.({ dealId, code: resolved.code }, "inspector.snapshot_failed");
+      emit?.({ type: "INSPECTION_INCONCLUSIVE", dealId });
+      return { ok: false, code: "INCONCLUSIVE", message: "deliverable snapshot failed; escrow stays locked" };
+    }
+    snap = resolved;
+    // Cryptographic binding: a declared hash must match the snapshot bytes,
+    // or the seller swapped the file between commit and verify. Images get
+    // one fuzzy second chance (see mockPerceptualSimilarity); every other
+    // kind freezes on mismatch.
+    const commitment = norm.hash ?? snap.hash ?? null;
+    if (norm.hash !== null && snap.hash !== undefined && snap.hash !== norm.hash && norm.type !== "service") {
+      if (norm.type === "image") {
+        const similarity = mockPerceptualSimilarity();
+        emit?.({ type: "AI_THINKING", dealId, rung: "SAM3", note: "fuzzy-provenance", similarity });
+        if (similarity < 0.95) {
+          ladderOut(aiEmit("INCONCLUSIVE", "HASH_MISMATCH", similarity, { commitment }));
+          return freezeInconclusive();
+        }
+        aiReason = "FUZZY_MATCH";
+        aiConfidence = similarity;
+      } else {
+        ladderOut(aiEmit("INCONCLUSIVE", "HASH_MISMATCH", 0, { commitment }));
+        return freezeInconclusive();
+      }
+    }
+    if (norm.type === "text" || norm.type === "json") {
+      const text = snap.bytes.toString("utf8");
+      if (norm.type === "json") {
+        try {
+          JSON.parse(text);
+        } catch {
+          ladderOut(aiEmit("INCONCLUSIVE", "JSON_PARSE_FAILED", 0, { commitment, preview: previewOf(text) }));
+          return freezeInconclusive();
+        }
+      }
+      const schemaHint = store.getAgentDetail?.(deal.seller)?.input_schema;
+      const textPrompt = schemaHint && Object.keys(schemaHint).length > 0
+        ? `${brief} The deal input_schema requires: ${JSON.stringify(schemaHint)}. Read the delivered text against both.`
+        : brief;
+      emit?.({ type: "AI_THINKING", dealId, rung: "MUSE_SPARK" });
+      const decided = await inspectWithText({ prompt: textPrompt, text });
+      if (decided.valid === true) ladderOut(aiEmit("SETTLED", decided.reason ?? "MODEL_VALID", 1, { commitment, preview: previewOf(text) }));
+      else if (decided.valid === false) ladderOut(aiEmit("REJECTED", decided.reason ?? "MODEL_INVALID", 1, { commitment, preview: previewOf(text) }));
+      else ladderOut(aiEmit("INCONCLUSIVE", decided.reason ?? "MODEL_INCONCLUSIVE", 0, { commitment, preview: previewOf(text) }));
+    } else if (norm.type === "service") {
+      // Challenge-Response: the liveness snapshot already proved existence;
+      // Muse Spark judges whether the live response satisfies the contract.
+      emit?.({ type: "AI_THINKING", dealId, rung: "MUSE_SPARK" });
+      const challengePrompt = `${brief} The seller delivered a live API endpoint. Its current response body follows. Does this API response satisfy the buyer contract? Reply valid only on a clear match.`;
+      const decided = await inspectWithText({ prompt: challengePrompt, text: snap.serviceBody ?? "" });
+      if (decided.valid === true) ladderOut(aiEmit("SETTLED", decided.reason ?? "MODEL_VALID", 1, { commitment, preview: previewOf(snap.serviceBody) }));
+      else if (decided.valid === false) ladderOut(aiEmit("REJECTED", decided.reason ?? "MODEL_INVALID", 1, { commitment, preview: previewOf(snap.serviceBody) }));
+      else ladderOut(aiEmit("INCONCLUSIVE", decided.reason ?? "MODEL_INCONCLUSIVE", 0, { commitment, preview: previewOf(snap.serviceBody) }));
+    }
+  }
+  function freezeInconclusive() {
+    try {
+      store.setDealAi?.(dealId, { verdict: "INCONCLUSIVE", reason: aiReason, confidence: aiConfidence });
+    } catch {
+      // Best-effort telemetry only.
+    }
+    (log ?? console).warn?.({ dealId }, "inspector.inconclusive");
+    emit?.({ type: "INSPECTION_INCONCLUSIVE", dealId });
+    return { ok: false, code: "INCONCLUSIVE", message: "inspection was inconclusive; escrow stays locked" };
+  }
+  // Text/json/service envelopes already verdict in their fast lanes above
+  // and fall straight through to persistence below. Image envelopes and
+  // legacy URLs rejoin the classic ladder here.
+  const fastLaned = norm !== null && (norm.type === "text" || norm.type === "json" || norm.type === "service");
+  if (!fastLaned) {
+    if (routed !== null && routed !== "text_gen") {
+      // Envelope snapshots reuse their bytes (no second fetch); legacy
+      // URLs fetch exactly as before, so keyless behavior is unchanged.
+      let local;
+      if (snap !== null && snap.bytes !== undefined && (norm === null || norm.type === "image" || norm.type === "video")) {
+        if (routed === "video_gen") {
+          local = { verdict: "INCONCLUSIVE", code: "VIDEO_FRAME_TODO", evidence: {} };
+        } else if (routed === "image_gen") {
+          local = inspectImageLocally(snap.bytes, brief);
+        } else if (routed === "speech_transcription") {
+          local = inspectAudioLocally(snap.bytes, brief);
+        } else {
+          local = { verdict: "INCONCLUSIVE", code: "UNKNOWN_CAPABILITY", evidence: {} };
+        }
+        (log ?? console).info?.({ dealId, capability: routed, code: local.code }, "inspector.local");
+      } else {
+        local = await localVerdict({ capability: routed, deliveryUrl, prompt: brief });
+        (log ?? console).info?.({ dealId, capability: routed, code: local.code }, "inspector.local");
+      }
+      verdict = local.verdict;
+      aiReason = local.code ?? "LOCAL";
+      aiConfidence = verdict === "SETTLED" ? 1 : 0;
+      // Tool escalation only: a local INCONCLUSIVE falls through to the Ladder,
+      // and only when the caller brought their own key. Keyless operation
+      // stays frozen here by design — the mock only verdicts on the default
+      // path, exactly like the old visionVerdict escalation rule.
+      if (verdict === "INCONCLUSIVE" && inspectorMode() === "meta") {
+        ladderOut(await modelVerdict({
+          deliveryUrl: norm?.uri ?? deliveryUrl,
+          prompt: brief,
+          dealId,
+          emit,
+          log,
+          inline: snap?.bytes !== undefined ? { base64: snap.bytes.toString("base64"), mime: snap.mime ?? "application/octet-stream" } : undefined,
+        }));
+      }
+    } else {
       ladderOut(await modelVerdict({ deliveryUrl, prompt: brief, dealId, emit, log }));
     }
-  } else {
-    ladderOut(await modelVerdict({ deliveryUrl, prompt: brief, dealId, emit, log }));
   }
   // Persist reasoning before branching: frozen deals keep their AI trace
   // for the operator, and terminal deals carry it into the ledger write.

@@ -269,6 +269,121 @@ test("protocol: escrow survives a server restart and settles at the accept price
   assert.deepEqual(paid.paid, 40);
 }, { timeout: 60000 });
 
+test("protocol: text envelope delivery settles on valid prose", async () => {
+  const saved = process.env.MODEL_API_KEY;
+  delete process.env.MODEL_API_KEY;
+  const { file } = tempDb();
+  const store = openStore(file);
+  try {
+    store.saveDeal({ id: "ni-text", state: "VERIFYING", buyer: "b", seller: "s", price: 10 });
+    const ledger = createLedger();
+    ledger.balances.b = 0;
+    ledger.balances.s = 0;
+    ledger.reserve = 10;
+    ledger.locks["ni-text"] = { agentId: "b", amount: 10 };
+    const events = [];
+    const result = await runInspection({
+      store,
+      ledger,
+      dealId: "ni-text",
+      envelope: { type: "text", content: "Genuine completed homepage copy, three sections delivered." },
+      emit: (e) => events.push(e),
+      log: console,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.to, "SETTLED");
+    assert.equal(store.getDeal("ni-text").state, "SETTLED");
+    assert.deepEqual(store.getDealAi("ni-text").verdict, "VALID");
+    assert.ok(events.some((e) => e.type === "AI_VERDICT" && e.verdict === "SETTLED"));
+  } finally {
+    store.close();
+    if (saved === undefined) delete process.env.MODEL_API_KEY;
+    else process.env.MODEL_API_KEY = saved;
+  }
+});
+
+test("protocol: service envelope settles on a healthy challenge response", async () => {
+  const saved = process.env.MODEL_API_KEY;
+  delete process.env.MODEL_API_KEY;
+  const { default: http } = await import("node:http");
+  const probe = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", data: "complete" }));
+  });
+  await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+  closers.push(async () => {
+    await new Promise((resolve) => probe.close(resolve));
+  });
+  const { port } = probe.address();
+  const { file } = tempDb();
+  const store = openStore(file);
+  try {
+    store.saveDeal({ id: "ni-svc", state: "VERIFYING", buyer: "b", seller: "s", price: 10 });
+    const ledger = createLedger();
+    ledger.balances.b = 0;
+    ledger.balances.s = 0;
+    ledger.reserve = 10;
+    ledger.locks["ni-svc"] = { agentId: "b", amount: 10 };
+    const events = [];
+    const result = await runInspection({
+      store,
+      ledger,
+      dealId: "ni-svc",
+      envelope: { type: "service", uri: `http://127.0.0.1:${port}/health` },
+      emit: (e) => events.push(e),
+      log: console,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.to, "SETTLED");
+    assert.equal(store.getDeal("ni-svc").state, "SETTLED");
+  } finally {
+    store.close();
+    if (saved === undefined) delete process.env.MODEL_API_KEY;
+    else process.env.MODEL_API_KEY = saved;
+  }
+});
+
+test("protocol: private delivery never leaks content into events or storage", async () => {
+  const saved = process.env.MODEL_API_KEY;
+  delete process.env.MODEL_API_KEY;
+  const { createHash } = await import("node:crypto");
+  const secret = "SECRET-SOURCE-abc123 proprietary algorithm";
+  const commitment = createHash("sha256").update(secret, "utf8").digest("hex");
+  const { file } = tempDb();
+  const store = openStore(file);
+  try {
+    store.saveDeal({ id: "ni-priv", state: "VERIFYING", buyer: "b", seller: "s", price: 10 });
+    const ledger = createLedger();
+    ledger.balances.b = 0;
+    ledger.balances.s = 0;
+    ledger.reserve = 10;
+    ledger.locks["ni-priv"] = { agentId: "b", amount: 10 };
+    const events = [];
+    const result = await runInspection({
+      store,
+      ledger,
+      dealId: "ni-priv",
+      envelope: { type: "text", content: secret, hash: commitment },
+      isPrivate: true,
+      emit: (e) => events.push(e),
+      log: console,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.to, "SETTLED");
+    // No emitted event may carry the plaintext or a preview of it.
+    for (const e of events) {
+      assert.ok(!JSON.stringify(e).includes("SECRET-SOURCE-abc123"));
+      assert.equal(e.preview, undefined);
+    }
+    const verdict = events.find((e) => e.type === "AI_VERDICT");
+    assert.equal(verdict?.commitment, commitment);
+  } finally {
+    store.close();
+    if (saved === undefined) delete process.env.MODEL_API_KEY;
+    else process.env.MODEL_API_KEY = saved;
+  }
+});
+
 test("protocol: runInspection aborts when the deal left VERIFYING mid-flight", async () => {
   // Simulates the admin force-refund race: a deal awaiting inspection is
   // closed by the operator, and the late AI response must not settle it.

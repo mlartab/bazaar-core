@@ -138,11 +138,62 @@ export async function executeSAM3(deliverable_url) {
   return { grounded: true, confidence: 0.98 };
 }
 
+// Text/JSON rung: verifies inline prose or structured data against the
+// brief (and the deal input_schema, when the caller folds it into the
+// prompt). Mock-aware like execute(): marker strings fail deterministically
+// keyless; the live path asks the model to read the text against the brief.
+// Never throws: every failure resolves to valid=null (frozen escrow).
+export async function executeText({ prompt, text }) {
+  if (typeof text !== "string" || text.length === 0) {
+    return { valid: null, reason: "BAD_INPUT: text must be a non-empty string" };
+  }
+  if (typeof prompt !== "string" || prompt.length === 0) {
+    return { valid: null, reason: "BAD_INPUT: prompt must be a non-empty string" };
+  }
+  if (!hasModelKey()) {
+    const ref = text.toLowerCase();
+    if (ref.includes("reject") || ref.includes("fail") || ref.includes("invalid")) {
+      return { valid: false, reason: "Mocked fail: marker in delivered text" };
+    }
+    return { valid: true, reason: "Mocked pass" };
+  }
+  const base = process.env.META_BASE_URL ?? "https://api.meta.ai/v1";
+  const model = process.env.META_MODEL ?? "muse-spark-1.3";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${base}/inspect-text`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MODEL_API_KEY}` },
+      body: JSON.stringify({ model, prompt: `${prompt}\n\nRead this delivered text against the brief and any schema above. Reply with exactly one word: "valid" or "invalid".\n\nDelivered text:\n${text.slice(0, 8000)}` }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return { valid: null, reason: "MODEL_ERROR" };
+    const data = await res.json().catch(() => null);
+    const verdict = typeof data?.verdict === "string" ? data.verdict.trim().toLowerCase() : "";
+    if (verdict === "valid") return { valid: true, reason: "MODEL_VALID" };
+    if (verdict === "invalid") return { valid: false, reason: "MODEL_INVALID" };
+    return { valid: null, reason: "MODEL_INCONCLUSIVE" };
+  } catch {
+    return { valid: null, reason: "FETCH_ABORTED" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Run the inspection tool. Never throws: every failure mode resolves to a
 // { valid, reason } envelope, with valid=null meaning inconclusive — the
 // Inspector maps that to frozen escrow, never to settlement.
-export async function execute({ deliverable_url, prompt }) {
-  if (typeof deliverable_url !== "string" || deliverable_url.length === 0) {
+export async function execute({ deliverable_url, prompt, image }) {
+  // Inline snapshot bytes (from the envelope resolver) skip the fetch so
+  // content-only envelopes verify without a URL round trip. Shape-checked
+  // like a fetched deliverable; anything else is doubt, never a pass.
+  const inline = image !== undefined
+    && typeof image === "object" && image !== null
+    && typeof image.base64 === "string" && image.base64.length > 0
+    ? { mime: typeof image.mime === "string" ? image.mime : "application/octet-stream", base64: image.base64 }
+    : null;
+  if ((typeof deliverable_url !== "string" || deliverable_url.length === 0) && inline === null) {
     return { valid: null, reason: "BAD_INPUT: deliverable_url must be a non-empty string" };
   }
   if (typeof prompt !== "string" || prompt.length === 0) {
@@ -154,7 +205,7 @@ export async function execute({ deliverable_url, prompt }) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS);
   try {
-    const deliverable = await fetchDeliverable(deliverable_url, ctrl.signal);
+    const deliverable = inline ?? await fetchDeliverable(deliverable_url, ctrl.signal);
     if (deliverable === null) return { valid: null, reason: "FETCH_FAILED" };
     const res = await fetch(`${base}/inspect`, {
       method: "POST",

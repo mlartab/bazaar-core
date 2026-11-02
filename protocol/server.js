@@ -638,6 +638,30 @@ export function createApp(dbPath) {
     const merged = { dealId, ...payload };
     const checked = validateSchema("delivery", merged);
     if (!checked.ok) return { ok: false, status: 400, payload: toContractError(checked) };
+    // At-least-one rule (schema cannot see across fields): legacy
+    // deliveryUrl or a Universal Delivery Envelope must be present.
+    if ((merged.deliveryUrl === undefined || merged.deliveryUrl === "") && (merged.envelope === undefined || merged.envelope === null)) {
+      return { ok: false, status: 400, payload: error("INVALID_SCHEMA", "field deliveryUrl must not be empty") };
+    }
+    // Envelope nested validation: type enum, string leaves, service needs
+    // a uri. Fail-closed here so the inspector never sees a bad envelope.
+    if (merged.envelope !== undefined && merged.envelope !== null) {
+      const env = merged.envelope;
+      if (!["image", "text", "json", "service"].includes(env.type)) {
+        return { ok: false, status: 400, payload: error("INVALID_SCHEMA", "field envelope.type must be one of: image, text, json, service") };
+      }
+      for (const key of ["content", "uri", "hash", "mime"]) {
+        if (env[key] !== undefined && typeof env[key] !== "string") {
+          return { ok: false, status: 400, payload: error("INVALID_SCHEMA", `field envelope.${key} must be a string`) };
+        }
+      }
+      if (env.type === "service" && (typeof env.uri !== "string" || env.uri === "")) {
+        return { ok: false, status: 400, payload: error("INVALID_SCHEMA", "service deliveries require envelope.uri") };
+      }
+      if ((env.content === undefined || env.content === "") && (env.uri === undefined || env.uri === "")) {
+        return { ok: false, status: 400, payload: error("INVALID_SCHEMA", "envelope requires content or uri") };
+      }
+    }
     return { ok: true, deal, delivery: merged };
   };
 
@@ -1203,7 +1227,24 @@ export function createApp(dbPath) {
         return [409, { ...error("MUST_PAY_BEFORE_DELIVERY", `deal ${id} is ${deal.state}; delivery requires a paid escrow`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
       }
       try {
-        const saved = store.saveDelivery({ id: merged.id, deal_id: id, status: null, delivery_url: merged.deliveryUrl });
+        // Envelope persistence: legacy URLs map to image envelopes; the row
+        // keeps delivery_url populated either way so legacy readers hold.
+        // Private content is dropped by saveDelivery itself (commitment
+        // hash only) — the plaintext never rests in SQLite.
+        const env = merged.envelope ?? null;
+        const isPrivate = merged.is_private === true;
+        const saved = store.saveDelivery({
+          id: merged.id,
+          deal_id: id,
+          status: null,
+          delivery_url: merged.deliveryUrl ?? env?.uri ?? null,
+          envelope_type: env?.type ?? null,
+          content: env?.content ?? null,
+          uri: env?.uri ?? null,
+          content_hash: env?.hash ?? null,
+          commitment_hash: isPrivate ? (env?.hash ?? null) : null,
+          is_private: isPrivate ? 1 : 0,
+        });
         if (!saved.ok) {
           if (saved.code === "DUPLICATE_DELIVERY") return [409, { ...toContractError(saved), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
           if (saved.code === "BAD_ID") return [400, { ...toContractError(saved), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
@@ -1229,10 +1270,15 @@ export function createApp(dbPath) {
       }
       // Fire-and-forget verdict: closures only, never req/res. A rejection
       // logs and leaves the deal VERIFYING (frozen), never settles on doubt.
-      runInspection({ store, ledger, dealId: id, deliveryUrl: merged.deliveryUrl, capability: merged.capability, emit, log: logger }).catch((err) => {
+      runInspection({ store, ledger, dealId: id, deliveryUrl: merged.deliveryUrl, envelope: merged.envelope ?? null, isPrivate: merged.is_private === true, capability: merged.capability, emit, log: logger }).catch((err) => {
         logger.error({ err, dealId: id }, "inspector.crashed");
       });
       const current = store.getDeal(id);
+      // Frozen 202 shape for legacy callers: envelope keys ride only when
+      // the caller sent an envelope, so old deepEqual assertions hold.
+      const receipt = { id: merged.id, dealId: id, deliveryUrl: merged.deliveryUrl };
+      if (merged.envelope !== undefined && merged.envelope !== null) receipt.envelope = merged.envelope;
+      if (merged.is_private === true) receipt.is_private = true;
       return [
         202,
         {
@@ -1241,7 +1287,7 @@ export function createApp(dbPath) {
           allowedMoves: movesFor(current.state),
           ...turnContext(current, agent),
           actions: ACTIONS,
-          result: { delivery: { id: merged.id, dealId: id, deliveryUrl: merged.deliveryUrl }, message: "Delivery accepted for inspection." },
+          result: { delivery: receipt, message: "Delivery accepted for inspection." },
         },
       ];
     },
@@ -1519,7 +1565,10 @@ export function createApp(dbPath) {
       if (recorded === null || typeof recorded.delivery_url !== "string") {
         return [409, { ...error("NO_DELIVERY", `deal ${id} has no recorded delivery to reinspect`), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, null) }];
       }
-      const outcome = await runInspection({ store, ledger, dealId: id, deliveryUrl: recorded.delivery_url, capability: undefined, emit, log: logger });
+      // Envelope-aware re-verdict: stored envelope fields (if any) ride
+      // along; legacy rows reinspect from the URL exactly as before.
+      const storedEnv = store.getDeliveryEnvelope?.(id) ?? null;
+      const outcome = await runInspection({ store, ledger, dealId: id, deliveryUrl: recorded.delivery_url, envelope: storedEnv, isPrivate: storedEnv?.isPrivate === true, capability: undefined, emit, log: logger });
       const current = store.getDeal(id);
       if (!outcome.ok) {
         const status = outcome.code === "SELLER_NOT_ACTIVE" ? 409 : 500;

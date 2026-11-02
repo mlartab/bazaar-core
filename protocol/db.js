@@ -157,6 +157,17 @@ export function openStore(path) {
     } catch {
       // Column present: nothing to migrate.
     }
+    // Universal Delivery Envelope columns. Same guarded pattern: NULL on
+    // pre-envelope rows, which read as legacy URL-only deliveries.
+    // envelope_type/content_hash/commitment track what was verified;
+    // is_private (0/1) marks commitment-bound private payloads.
+    for (const column of ["envelope_type TEXT", "content TEXT", "uri TEXT", "content_hash TEXT", "commitment_hash TEXT", "is_private INTEGER DEFAULT 0"]) {
+      try {
+        db.exec(`ALTER TABLE deliveries ADD COLUMN ${column}`);
+      } catch {
+        // Column present: nothing to migrate.
+      }
+    }
     // Marketplace listing fields. Same guarded pattern: the throws mean
     // "already there", which is the common case on old database files.
     for (const column of ["title TEXT", "description TEXT", "price INTEGER", "category TEXT"]) {
@@ -780,11 +791,19 @@ export function openStore(path) {
         return fail("BAD_ID", "delivery must have a non-empty string deal_id");
       }
       try {
-        run("INSERT INTO deliveries (id, deal_id, status, delivery_url) VALUES (?, ?, ?, ?)", [
+        run("INSERT INTO deliveries (id, deal_id, status, delivery_url, envelope_type, content, uri, content_hash, commitment_hash, is_private) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
           delivery.id,
           delivery.deal_id,
           delivery.status ?? null,
           delivery.delivery_url ?? null,
+          delivery.envelope_type ?? null,
+          // Private payloads never rest in SQLite either: only the
+          // commitment hash is stored, content stays NULL by construction.
+          delivery.is_private === 1 ? null : (delivery.content ?? null),
+          delivery.uri ?? null,
+          delivery.content_hash ?? null,
+          delivery.commitment_hash ?? null,
+          delivery.is_private === 1 ? 1 : 0,
         ]);
       } catch (err) {
         // Same UNIQUE mapping as saveMove: a repeated delivery id is a
@@ -804,6 +823,24 @@ export function openStore(path) {
     getDeliveryByDeal(dealId) {
       if (!isValidId(dealId)) return null;
       return get("SELECT id, deal_id, status, delivery_url FROM deliveries WHERE deal_id = ? ORDER BY rowid DESC LIMIT 1", [dealId]) ?? null;
+    },
+    // Envelope reader for reinspection and the inspector: the frozen
+    // getDelivery/getDeliveryByDeal shapes above never change, so legacy
+    // readers keep their exact rows; envelope-aware paths read here.
+    getDeliveryEnvelope(dealId) {
+      if (!isValidId(dealId)) return null;
+      const row = get("SELECT envelope_type, content, uri, content_hash, commitment_hash, is_private FROM deliveries WHERE deal_id = ? ORDER BY rowid DESC LIMIT 1", [dealId]);
+      if (row === undefined || row === null || row.envelope_type === null) return null;
+      return {
+        type: row.envelope_type,
+        // Private rows store NULL content by construction: callers get the
+        // commitment only and must treat content as withheld.
+        content: row.content ?? null,
+        uri: row.uri ?? null,
+        hash: row.content_hash ?? null,
+        commitment: row.commitment_hash ?? null,
+        isPrivate: row.is_private === 1,
+      };
     },
   };
 

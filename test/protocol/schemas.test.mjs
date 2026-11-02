@@ -22,7 +22,7 @@ test("protocol: schemas reject requests with missing fields", () => {
   assert.equal(invalid("move", { dealId: "d1", key: "k1", price: 50 }).field, "kind");
   assert.equal(invalid("delivery", { dealId: "d1", deliveryUrl: "u1" }).field, "id");
   assert.equal(invalid("delivery", { id: "x1" }).field, "dealId");
-  assert.equal(invalid("delivery", { id: "x1", dealId: "d1" }).field, "deliveryUrl");
+  assert.equal(invalid("delivery", { id: "x1", dealId: "d1", deliveryUrl: 42 }).field, "deliveryUrl");
 });
 
 test("protocol: schemas reject fields with the wrong type", () => {
@@ -81,6 +81,8 @@ test("protocol: schemas accept a valid request for each endpoint", () => {
   assert.deepEqual(validate("move", { dealId: "d1", key: "k2", kind: "ACCEPT", price: 50 }), { ok: true });
   assert.deepEqual(validate("move", { dealId: "d1", key: "k3", kind: "WALK" }), { ok: true });
   assert.deepEqual(validate("delivery", { id: "x1", dealId: "d1", deliveryUrl: "u1" }), { ok: true });
+  assert.deepEqual(validate("delivery", { id: "x1", dealId: "d1", envelope: { type: "text", content: "done" } }), { ok: true });
+  assert.deepEqual(validate("delivery", { id: "x1", dealId: "d1", envelope: { type: "text", content: "done" }, is_private: true }), { ok: true });
   assert.deepEqual(validate("pay", {}), { ok: true });
 });
 

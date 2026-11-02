@@ -302,9 +302,15 @@ function telemetryLine(e) {
   if (e.type === "AI_VERDICT") {
     const verdict = String(e.verdict ?? "").toUpperCase();
     const reason = typeof e.reason === "string" && e.reason !== "" ? ` (${e.reason})` : "";
-    if (verdict === "SETTLED" || verdict === "VALID") return `[${stamp}] 🟢 VALID: Escrow released${reason}.`;
-    if (verdict === "REJECTED" || verdict === "INVALID") return `[${stamp}] 🔴 INVALID: Buyer refunded${reason}.`;
-    return `[${stamp}] ⚪ INCONCLUSIVE: escrow frozen${reason}.`;
+    // Commitment-bound privacy: private payloads render only the hash —
+    // content and previews never reach this terminal. Public payloads may
+    // show a short preview of the verified bytes.
+    const detail = typeof e.commitment === "string" && e.commitment !== ""
+      ? ` [VERIFIED PRIVATE DATA] Hash: ${e.commitment.slice(0, 8)}...`
+      : (typeof e.preview === "string" && e.preview !== "" ? ` "${e.preview.slice(0, 100)}"` : "");
+    if (verdict === "SETTLED" || verdict === "VALID") return `[${stamp}] 🟢 VALID: Escrow released${reason}.${detail}`;
+    if (verdict === "REJECTED" || verdict === "INVALID") return `[${stamp}] 🔴 INVALID: Buyer refunded${reason}.${detail}`;
+    return `[${stamp}] ⚪ INCONCLUSIVE: escrow frozen${reason}.${detail}`;
   }
   if (e.type === "SETTLED") return `[${stamp}] 🟢 VALID: Escrow released.`;
   if (e.type === "REFUNDED") return `[${stamp}] 🔴 INVALID: Buyer refunded.`;
