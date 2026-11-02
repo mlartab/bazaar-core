@@ -268,3 +268,31 @@ test("protocol: escrow survives a server restart and settles at the accept price
   // lock the inspector could not have paid this amount.
   assert.deepEqual(paid.paid, 40);
 }, { timeout: 60000 });
+
+test("protocol: runInspection aborts when the deal left VERIFYING mid-flight", async () => {
+  // Simulates the admin force-refund race: a deal awaiting inspection is
+  // closed by the operator, and the late AI response must not settle it.
+  const { file } = tempDb();
+  const store = openStore(file);
+  try {
+    store.saveDeal({ id: "ni-race", state: "VERIFYING", buyer: "b", seller: "s", price: 25 });
+    // Operator closes the deal before the inspector's verdict lands.
+    store.setDealState("ni-race", "REJECTED");
+    const ledger = createLedger();
+    const events = [];
+    const result = await runInspection({
+      store,
+      ledger,
+      dealId: "ni-race",
+      deliveryUrl: "deliverable:x",
+      emit: (e) => events.push(e),
+      log: console,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "NOT_VERIFYING");
+    assert.equal(store.getDeal("ni-race").state, "REJECTED");
+    assert.ok(events.every((e) => e.type !== "STATE" && e.type !== "SETTLED" && e.type !== "REFUNDED"));
+  } finally {
+    store.close();
+  }
+});

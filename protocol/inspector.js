@@ -14,7 +14,7 @@ import { transition } from "../src/deal-states.js";
 import { settle, refund } from "../src/ledger.js";
 import { crToUsdc, releaseFunds } from "./wallet.js";
 import { isKnownCapability, inspectImageLocally, inspectAudioLocally } from "./capabilities.js";
-import { execute as inspectWithBrain, inspectorMode } from "./meta-brain.js";
+import { execute as inspectWithBrain, executeSAM3, inspectorMode } from "./meta-brain.js";
 
 // Capability resolution: explicit per-delivery override first, then the
 // seller's registered capability, then null (today's mock/vision path).
@@ -27,14 +27,49 @@ function resolveCapability({ store, deal, capability }) {
   return null;
 }
 
-// Meta Tool Pattern: the model-call layer lives in meta-brain.js; this maps
-// its { valid, reason } envelope onto inspector verdicts. null means the
-// tool was inconclusive, which freezes escrow — the fail-frozen rule.
-async function modelVerdict({ deliveryUrl, prompt }) {
+// Meta AI Trust Engine Ladder: Local -> SAM 3 -> Muse Spark -> Glimmer.
+// Returns { verdict: "SETTLED"|"REJECTED"|"INCONCLUSIVE", reason, confidence }
+// so the state machine below keeps its exact contract. Every rung is
+// fail-closed: any doubt resolves to INCONCLUSIVE (frozen escrow).
+// Keyless (mock) operation skips the SAM 3/Spark rungs and maps the mock
+// straight through, byte-identical to the old modelVerdict. Glimmer is a
+// dispute-only stub for now and never changes a verdict on its own.
+async function modelVerdict({ deliveryUrl, prompt, dealId, emit, log }) {
+  const aiVerdict = (verdict, reason, confidence) => {
+    emit?.({ type: "AI_VERDICT", dealId, verdict, reason, confidence });
+    (log ?? console).info?.({ dealId, verdict, reason, confidence }, "inspector.ai_verdict");
+    return { verdict, reason, confidence };
+  };
+  // Mock path first: no model key means the deterministic mock decides,
+  // exactly like the old mapping (null tool output freezes).
+  if (inspectorMode() !== "meta") {
+    const decided = await inspectWithBrain({ deliverable_url: deliveryUrl, prompt });
+    if (decided.valid === true) return aiVerdict("SETTLED", decided.reason ?? "MODEL_VALID", 1);
+    if (decided.valid === false) return aiVerdict("REJECTED", decided.reason ?? "MODEL_INVALID", 1);
+    return aiVerdict("INCONCLUSIVE", decided.reason ?? "MODEL_INCONCLUSIVE", 0);
+  }
+  // Rung 2 (SAM 3 grounding): an ungrounded deliverable freezes here and
+  // never reaches the semantic check.
+  emit?.({ type: "AI_THINKING", dealId, rung: "SAM3" });
+  let grounding;
+  try {
+    grounding = await executeSAM3(deliveryUrl);
+  } catch {
+    grounding = { grounded: false, confidence: 0 };
+  }
+  if (!grounding.grounded) {
+    return aiVerdict("INCONCLUSIVE", "SAM3_UNGROUNDED", grounding.confidence ?? 0);
+  }
+  // Rung 3 (Muse Spark schema/semantics): INVALID or INCONCLUSIVE freezes
+  // or refunds downstream — this rung never settles on its own.
+  emit?.({ type: "AI_THINKING", dealId, rung: "MUSE_SPARK" });
   const decided = await inspectWithBrain({ deliverable_url: deliveryUrl, prompt });
-  if (decided.valid === true) return "SETTLED";
-  if (decided.valid === false) return "REJECTED";
-  return "INCONCLUSIVE";
+  // Rung 4 (Glimmer referee): dispute-only stub. No dispute signal exists
+  // on this path yet, so it observes without overriding the Spark verdict.
+  emit?.({ type: "AI_THINKING", dealId, rung: "GLIMMER" });
+  if (decided.valid === true) return aiVerdict("SETTLED", decided.reason ?? "MODEL_VALID", grounding.confidence ?? 0.98);
+  if (decided.valid === false) return aiVerdict("REJECTED", decided.reason ?? "MODEL_INVALID", grounding.confidence ?? 0.98);
+  return aiVerdict("INCONCLUSIVE", decided.reason ?? "MODEL_INCONCLUSIVE", 0);
 }
 
 // Zero-cost local verdict. Bytes come from the inspector's guarded fetch;
@@ -163,20 +198,40 @@ export async function runInspection({ store, ledger, dealId, deliveryUrl, capabi
   const brief = typeof deal.metadata?.prompt === "string" && deal.metadata.prompt.length > 0
     ? deal.metadata.prompt
     : buildInspectionPrompt({ dealId, price: deal.price, seller: deal.seller });
+  // Trust Engine reasoning rides alongside the verdict so it can be
+  // persisted and telemetered even when the outcome is frozen.
   let verdict;
+  let aiReason = "LOCAL";
+  let aiConfidence = 0;
+  const ladderOut = (out) => {
+    verdict = out.verdict;
+    aiReason = out.reason;
+    aiConfidence = out.confidence;
+  };
   if (routed !== null && routed !== "text_gen") {
     const local = await localVerdict({ capability: routed, deliveryUrl, prompt: brief });
     (log ?? console).info?.({ dealId, capability: routed, code: local.code }, "inspector.local");
     verdict = local.verdict;
-    // Tool escalation only: a local INCONCLUSIVE falls through to the Meta
-    // tool call, and only when the caller brought their own key. Keyless
-    // operation stays frozen here by design — the mock only verdicts on the
-    // default path, exactly like the old visionVerdict escalation rule.
+    aiReason = local.code ?? "LOCAL";
+    aiConfidence = verdict === "SETTLED" ? 1 : 0;
+    // Tool escalation only: a local INCONCLUSIVE falls through to the Ladder,
+    // and only when the caller brought their own key. Keyless operation
+    // stays frozen here by design — the mock only verdicts on the default
+    // path, exactly like the old visionVerdict escalation rule.
     if (verdict === "INCONCLUSIVE" && inspectorMode() === "meta") {
-      verdict = await modelVerdict({ deliveryUrl, prompt: brief });
+      ladderOut(await modelVerdict({ deliveryUrl, prompt: brief, dealId, emit, log }));
     }
   } else {
-    verdict = await modelVerdict({ deliveryUrl, prompt: brief });
+    ladderOut(await modelVerdict({ deliveryUrl, prompt: brief, dealId, emit, log }));
+  }
+  // Persist reasoning before branching: frozen deals keep their AI trace
+  // for the operator, and terminal deals carry it into the ledger write.
+  // Persistence never fails the inspection — a store error leaves the
+  // verdict to proceed fail-closed below.
+  try {
+    store.setDealAi?.(dealId, { verdict: verdict === "SETTLED" ? "VALID" : verdict === "REJECTED" ? "INVALID" : "INCONCLUSIVE", reason: aiReason, confidence: aiConfidence });
+  } catch {
+    // Telemetry is best-effort; the verdict below is authoritative.
   }
   if (verdict === "INCONCLUSIVE") {
     (log ?? console).warn?.({ dealId }, "inspector.inconclusive");
@@ -187,6 +242,16 @@ export async function runInspection({ store, ledger, dealId, deliveryUrl, capabi
   if (!advanced.ok) {
     (log ?? console).error?.({ dealId, verdict }, "inspector.transition_failed");
     return { ok: false, code: advanced.code, message: advanced.message };
+  }
+  // Late-finish guard: the verdict above resolved asynchronously, so the
+  // deal may have moved under us (e.g. an admin force-refund). Re-fetch
+  // and abort unless it is still awaiting inspection — settling a deal
+  // the operator already closed would rewrite history and double-move
+  // funds. Fail-closed: abort leaves state and escrow exactly as found.
+  const currentDeal = store.getDeal(dealId);
+  if (currentDeal === null || currentDeal.state !== "VERIFYING") {
+    (log ?? console).warn?.({ dealId }, "inspector.stale_verdict");
+    return { ok: false, code: "NOT_VERIFYING", message: `deal ${dealId} is not awaiting inspection` };
   }
   // Ledger-before-state: funds move first, and only a successful ledger
   // op advances the SQLite row. A failed settle/refund leaves the deal in

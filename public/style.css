@@ -1411,6 +1411,22 @@ body[data-density="compact"] #log { height: 300px; }
 .tl-id { font-size: 11px; color: var(--ink-2); }
 .tl-at { margin-left: auto; }
 
+/* AI telemetry terminal: dark monospace feed of Trust Engine rungs. */
+.ai-terminal {
+  background: #1c2b33;
+  color: #e4e6eb;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  max-height: 220px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.ai-terminal .sub { color: rgba(255, 255, 255, 0.55); }
+.ai-terminal .ai-line { white-space: pre-wrap; word-break: break-word; }
+
 /* Verification Status rail: plain rows, no nesting. */
 .verify-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
 .verify-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

@@ -126,6 +126,18 @@ function mockExecute(deliverable_url) {
   return { valid: true, reason: "Mocked pass" };
 }
 
+// SAM 3 grounding rung (stub): no production SAM 3 API is wired yet, so
+// this simulates the call with a 1-second delay and a grounded verdict.
+// Fail-closed callers treat grounded=false (or a throw, which never
+// happens here) as inconclusive. Never throws.
+export async function executeSAM3(deliverable_url) {
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  if (typeof deliverable_url !== "string" || deliverable_url.length === 0) {
+    return { grounded: false, confidence: 0 };
+  }
+  return { grounded: true, confidence: 0.98 };
+}
+
 // Run the inspection tool. Never throws: every failure mode resolves to a
 // { valid, reason } envelope, with valid=null meaning inconclusive — the
 // Inspector maps that to frozen escrow, never to settlement.

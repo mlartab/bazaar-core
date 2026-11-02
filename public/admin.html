@@ -278,7 +278,7 @@
         <pre id="drawer-body"></pre>
       </aside>
     </main>
-    <aside class="verify" aria-label="Verification status">
+    <aside class="verify" id="verify-rail" aria-label="Verification status">
       <div class="card" aria-label="Inspector state">
         <h2 title="Mock verdicts when keyless, Meta Model API when MODEL_API_KEY is set">Inspector</h2>
         <div id="verify-inspector"><span class="sub">Loading…</span></div>
@@ -290,6 +290,10 @@
       <div class="card" aria-label="Recent inspection verdicts">
         <h2 title="Latest terminal deals with their close reasons">Recent Verdicts</h2>
         <ul id="verify-verdicts" class="verify-list"><li class="sub">Loading…</li></ul>
+      </div>
+      <div class="card" aria-label="Live AI telemetry">
+        <h2 title="Live Trust Engine rungs and verdicts from the SSE stream">AI Telemetry</h2>
+        <div id="ai-telemetry" class="ai-terminal" role="log" aria-label="Live AI inspection log"><div class="sub">Waiting for AI activity…</div></div>
       </div>
     </aside>
   </div>

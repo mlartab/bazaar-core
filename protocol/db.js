@@ -262,6 +262,17 @@ export function openStore(path) {
         // Column present: nothing to migrate.
       }
     }
+    // Meta AI Trust Engine reasoning. Same guarded pattern: NULL on
+    // pre-engine rows, which predate AI verdicts. Kept off the frozen
+    // getDeal/listDeals shapes (see getDealAi); only getDealRow carries
+    // them for the detail endpoint.
+    for (const column of ["ai_verdict TEXT", "ai_reason TEXT", "ai_confidence REAL"]) {
+      try {
+        db.exec(`ALTER TABLE deals ADD COLUMN ${column}`);
+      } catch {
+        // Column present: nothing to migrate.
+      }
+    }
   } catch (err) {
     try {
       db.close();
@@ -548,7 +559,7 @@ export function openStore(path) {
     // close reason). getDeal's frozen shape is untouched.
     getDealRow(id) {
       if (!isValidId(id)) return null;
-      const row = get("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, sla_ms, updated_at, metadata_json, pay_tx_hash, payout_tx_hash FROM deals WHERE id = ?", [id]);
+      const row = get("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, sla_ms, updated_at, metadata_json, pay_tx_hash, payout_tx_hash, ai_verdict, ai_reason, ai_confidence FROM deals WHERE id = ?", [id]);
       if (row === undefined || row === null) return null;
       const { metadata_json, ...full } = row;
       const metadata = parseMetadata(metadata_json);
@@ -689,16 +700,39 @@ export function openStore(path) {
       const rejected = get("SELECT COUNT(*) AS n FROM deals WHERE state = 'REJECTED'").n;
       return { totalDeals: total, activeDeals: active, tvl, settled, rejected };
     },
-    setDealState(id, state) {
+    setDealState(id, state, ai) {
       if (typeof state !== "string" || state.length === 0) {
         return fail("BAD_STATE", "state must be a non-empty string");
       }
       // updated_at rides every transition: setDealState is the single choke
       // point all state changes flow through, so the inspection sweeper can
-      // trust the stamp without per-callsite edits.
-      const result = run("UPDATE deals SET state = ?, updated_at = ? WHERE id = ?", [state, Date.now(), id]);
+      // trust the stamp without per-callsite edits. The optional ai aisle
+      // ({ verdict, reason, confidence }) persists Trust Engine reasoning
+      // on the same write; absent leaves the columns untouched.
+      let result;
+      if (ai !== undefined && ai !== null && typeof ai === "object") {
+        result = run("UPDATE deals SET state = ?, updated_at = ?, ai_verdict = ?, ai_reason = ?, ai_confidence = ? WHERE id = ?", [state, Date.now(), ai.verdict ?? null, ai.reason ?? null, ai.confidence ?? null, id]);
+      } else {
+        result = run("UPDATE deals SET state = ?, updated_at = ? WHERE id = ?", [state, Date.now(), id]);
+      }
       if (result.changes === 0) return fail("NO_SUCH_DEAL", `no deal with id ${id}`);
       return { ok: true };
+    },
+    // Trust Engine reasoning writer: persists the AI verdict without
+    // touching state, so telemetry lands even on frozen outcomes.
+    setDealAi(id, { verdict = null, reason = null, confidence = null } = {}) {
+      if (!isValidId(id)) return fail("BAD_ID", "deal must have a non-empty string id");
+      const result = run("UPDATE deals SET ai_verdict = ?, ai_reason = ?, ai_confidence = ? WHERE id = ?", [verdict, reason, confidence, id]);
+      if (result.changes === 0) return fail("NO_SUCH_DEAL", `no deal with id ${id}`);
+      return { ok: true };
+    },
+    // Trust Engine reasoning reader: kept off getDeal/listDeals so their
+    // frozen wire shapes never change; the detail endpoint reads getDealRow.
+    getDealAi(id) {
+      if (!isValidId(id)) return null;
+      const row = get("SELECT ai_verdict, ai_reason, ai_confidence FROM deals WHERE id = ?", [id]);
+      if (row === undefined || row === null) return null;
+      return { verdict: row.ai_verdict ?? null, reason: row.ai_reason ?? null, confidence: row.ai_confidence ?? null };
     },
     // Frozen inspection: VERIFYING deals the AI never verdicts. NULL
     // updated_at (neither stamp regime) never expires — fail-frozen.

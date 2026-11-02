@@ -43,7 +43,9 @@ function connectStream() {
   stream.onopen = () => setMode(true);
   stream.onmessage = (msg) => {
     try {
-      pushTimeline(JSON.parse(msg.data));
+      const event = JSON.parse(msg.data);
+      pushTimeline(event);
+      pushTelemetry(event);
     } catch {
       // Non-JSON heartbeat: nothing to render, still refresh totals below.
     }
@@ -260,6 +262,8 @@ function timelineSteps(e) {
     case "SETTLED": return ["Action: INSPECT", "Observe: SETTLED — funds released"];
     case "REFUNDED": return ["Action: INSPECT", "Observe: REJECTED — buyer refunded"];
     case "INSPECTION_INCONCLUSIVE": return ["Action: INSPECT", "Observe: INCONCLUSIVE — escrow frozen"];
+    case "AI_THINKING": return ["Action: AI " + (e.rung ?? "thinking"), "Observe: rung running"];
+    case "AI_VERDICT": return ["Action: AI verdict", "Observe: " + (e.verdict ?? "?")];
     case "STATE": return [`Action: ${e.from ?? "?"} → ${e.to ?? "?"}`, `Observe: ${e.to ?? "?"}`];
     default: return [`Action: ${e.type ?? "event"}`, "Observe: —"];
   }
@@ -270,6 +274,58 @@ function timelineStateClass(e) {
   if (s === "SETTLED") return "s-done";
   if (s === "REJECTED" || e.type === "REFUNDED") return "s-rejected";
   return "s-running";
+}
+
+// AI telemetry terminal: append-only monospace log of Trust Engine rungs
+// and verdicts. Unknown types are ignored so heartbeat and future events
+// never pollute the feed. Capped so a hot ladder cannot grow the DOM.
+const TELEMETRY_CAP = 50;
+
+function telemetryStamp(at) {
+  try {
+    return new Date(typeof at === "number" ? at : Date.now()).toLocaleTimeString("en-GB", { hour12: false });
+  } catch {
+    return "";
+  }
+}
+
+function telemetryLine(e) {
+  const stamp = telemetryStamp(e.at);
+  if (e.type === "AI_THINKING") {
+    const rung = String(e.rung ?? "").toUpperCase();
+    const label = rung === "SAM3" ? "SAM3: Grounding deliverable..."
+      : rung === "MUSE_SPARK" ? "MUSE SPARK: Inspecting schema..."
+      : rung === "GLIMMER" ? "GLIMMER: Referee review..."
+      : `${rung || "AI"}: Thinking...`;
+    return `[${stamp}] 🟡 ${label}`;
+  }
+  if (e.type === "AI_VERDICT") {
+    const verdict = String(e.verdict ?? "").toUpperCase();
+    const reason = typeof e.reason === "string" && e.reason !== "" ? ` (${e.reason})` : "";
+    if (verdict === "SETTLED" || verdict === "VALID") return `[${stamp}] 🟢 VALID: Escrow released${reason}.`;
+    if (verdict === "REJECTED" || verdict === "INVALID") return `[${stamp}] 🔴 INVALID: Buyer refunded${reason}.`;
+    return `[${stamp}] ⚪ INCONCLUSIVE: escrow frozen${reason}.`;
+  }
+  if (e.type === "SETTLED") return `[${stamp}] 🟢 VALID: Escrow released.`;
+  if (e.type === "REFUNDED") return `[${stamp}] 🔴 INVALID: Buyer refunded.`;
+  if (e.type === "INSPECTION_INCONCLUSIVE") return `[${stamp}] ⚪ INCONCLUSIVE: escrow frozen.`;
+  return null;
+}
+
+function pushTelemetry(e) {
+  const line = e !== null && typeof e === "object" ? telemetryLine(e) : null;
+  if (line === null) return;
+  const holder = $("ai-telemetry");
+  if (holder === null) return;
+  const idle = holder.querySelector(".sub");
+  if (idle !== null && holder.children.length === 1) idle.remove();
+  const el = document.createElement("div");
+  el.className = "ai-line";
+  if (typeof e.dealId === "string") el.dataset.dealId = e.dealId;
+  el.textContent = line;
+  holder.appendChild(el);
+  while (holder.children.length > TELEMETRY_CAP) holder.firstChild.remove();
+  holder.scrollTop = holder.scrollHeight;
 }
 
 function pushTimeline(e) {
@@ -330,6 +386,12 @@ function renderVerify(result, agents, deals) {
       : terminal.map((d) => `<li data-deal-id="${esc(d.id)}"><code>${esc(d.id)}</code> ` +
         `<span class="${d.state === "SETTLED" ? "s-done" : "s-rejected"}">${esc(d.state)}</span>` +
         (typeof d.close_reason === "string" && d.close_reason !== "" ? ` <span class="sub">${esc(d.close_reason)}</span>` : "") + `</li>`).join("");
+  }
+  // AI telemetry card: SSE-owned (pushTelemetry appends live lines), so the
+  // poll only guarantees the placeholder survives re-renders elsewhere.
+  const telemetry = $("ai-telemetry");
+  if (telemetry !== null && telemetry.children.length === 0) {
+    telemetry.innerHTML = `<div class="sub">Waiting for AI activity…</div>`;
   }
 }
 
