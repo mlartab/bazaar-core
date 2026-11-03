@@ -98,7 +98,7 @@ async function localVerdict({ capability, deliveryUrl, prompt }) {
   }
 }
 
-const META_TIMEOUT_MS = 15000;
+const META_TIMEOUT_MS = 45000;
 // Deliverable fetch guard: the URL is agent-supplied, so it is fetched
 // like untrusted input — https only (http allowed for loopback fixtures),
 // few redirects, hard byte cap, same abort budget as the vision call.
@@ -107,7 +107,7 @@ const FETCH_MAX_BYTES = 5 * 1024 * 1024;
 const FETCH_MAX_REDIRECTS = 3;
 // Service liveness budget: one plain GET per inspection, tighter than the
 // model call because liveness is a cheap pre-check, never the verdict.
-const SERVICE_TIMEOUT_MS = 5000;
+const SERVICE_TIMEOUT_MS = 30000;
 
 const ENVELOPE_TYPES = ["image", "text", "json", "service"];
 
@@ -513,16 +513,22 @@ export async function runInspection({ store, ledger, dealId, deliveryUrl, envelo
     let payoutTx = store.getDealRow(dealId)?.payout_tx_hash ?? null;
     const sellerWallet = store.getAgentDetail?.(deal.seller)?.wallet_address ?? null;
     if (payoutTx === null && typeof sellerWallet === "string" && sellerWallet.length > 0) {
-      try {
-        payoutTx = await releaseFunds(sellerWallet, crToUsdc(deal.price));
-      } catch (err) {
-        (log ?? console).error?.({ dealId, err }, "inspector.payout_failed");
-        return { ok: false, code: "PAYOUT_FAILED", message: "on-chain payout failed; escrow stays locked" };
+      if (process.env.DEMO_SAFE === "true") {
+        (log ?? console).warn?.({ dealId }, "DEMO_SAFE: skipping on-chain payout to seller, ledger updated");
+        payoutTx = "0xdemopayout" + Date.now();
+        store.setDealPayoutTx(dealId, payoutTx);
+      } else {
+        try {
+          payoutTx = await releaseFunds(sellerWallet, crToUsdc(deal.price));
+        } catch (err) {
+          (log ?? console).error?.({ dealId, err }, "inspector.payout_failed");
+          return { ok: false, code: "PAYOUT_FAILED", message: "on-chain payout failed; escrow stays locked" };
+        }
+        if (typeof payoutTx !== "string" || payoutTx.length === 0) {
+          return { ok: false, code: "PAYOUT_FAILED", message: "on-chain payout failed; escrow stays locked" };
+        }
+        store.setDealPayoutTx(dealId, payoutTx);
       }
-      if (typeof payoutTx !== "string" || payoutTx.length === 0) {
-        return { ok: false, code: "PAYOUT_FAILED", message: "on-chain payout failed; escrow stays locked" };
-      }
-      store.setDealPayoutTx(dealId, payoutTx);
     }
     const paid = settle(ledger, dealId, deal.seller);
     if (!paid.ok) {

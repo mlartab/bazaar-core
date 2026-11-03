@@ -50,7 +50,7 @@ export const DEFINITION = {
   },
 };
 
-const META_TIMEOUT_MS = 15000;
+const META_TIMEOUT_MS = 45000;
 // Deliverable fetch guard: the URL is agent-supplied, so it is fetched
 // like untrusted input — https only (http for loopback fixtures), few
 // redirects, hard byte cap, same abort budget as the model call.
@@ -162,17 +162,26 @@ export async function executeText({ prompt, text }) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS);
   try {
-    const res = await fetch(`${base}/inspect-text`, {
+    const activeKey = process.env.MODEL_API_BasetenKEY || process.env.MODEL_API_KEY;
+    console.log("DEBUG KEY:", activeKey ? activeKey.slice(0, 5) + "..." : "UNDEFINED");
+    const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MODEL_API_KEY}` },
-      body: JSON.stringify({ model, prompt: `${prompt}\n\nRead this delivered text against the brief and any schema above. Reply with exactly one word: "valid" or "invalid".\n\nDelivered text:\n${text.slice(0, 8000)}` }),
+      headers: { "content-type": "application/json", authorization: `Bearer ${activeKey}` },
+      body: JSON.stringify({
+        model: process.env.META_MODEL || "meta-models/muse-spark-open-1026",
+        messages: [{
+          role: "user",
+          content: `${prompt}\n\nDeliverable to verify:\n${text}\n\nReply exactly with VALID or INVALID.`,
+        }],
+      }),
       signal: ctrl.signal,
     });
     if (!res.ok) return { valid: null, reason: "MODEL_ERROR" };
-    const data = await res.json().catch(() => null);
-    const verdict = typeof data?.verdict === "string" ? data.verdict.trim().toLowerCase() : "";
-    if (verdict === "valid") return { valid: true, reason: "MODEL_VALID" };
-    if (verdict === "invalid") return { valid: false, reason: "MODEL_INVALID" };
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    const clean = content.trim().toUpperCase();
+    if (clean.includes("VALID")) return { valid: true, reason: "META_AI_VERIFIED" };
+    if (clean.includes("INVALID")) return { valid: false, reason: "META_AI_REJECTED" };
     return { valid: null, reason: "MODEL_INCONCLUSIVE" };
   } catch {
     return { valid: null, reason: "FETCH_ABORTED" };
@@ -207,17 +216,29 @@ export async function execute({ deliverable_url, prompt, image }) {
   try {
     const deliverable = inline ?? await fetchDeliverable(deliverable_url, ctrl.signal);
     if (deliverable === null) return { valid: null, reason: "FETCH_FAILED" };
-    const res = await fetch(`${base}/inspect`, {
+    const activeKey = process.env.MODEL_API_BasetenKEY || process.env.MODEL_API_KEY;
+    console.log("DEBUG KEY:", activeKey ? activeKey.slice(0, 5) + "..." : "UNDEFINED");
+    const res = await fetch(`${base}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${process.env.MODEL_API_KEY}` },
-      body: JSON.stringify({ model, prompt, image: deliverable }),
+      headers: { "content-type": "application/json", authorization: `Bearer ${activeKey}` },
+      body: JSON.stringify({
+        model: process.env.META_MODEL || "meta-models/muse-spark-open-1026",
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: `${prompt}\n\nReply exactly with VALID or INVALID.` },
+            { type: "image_url", image_url: { url: `data:${deliverable.mime};base64,${deliverable.base64}` } },
+          ],
+        }],
+      }),
       signal: ctrl.signal,
     });
     if (!res.ok) return { valid: null, reason: "MODEL_ERROR" };
-    const data = await res.json().catch(() => null);
-    const verdict = typeof data?.verdict === "string" ? data.verdict.trim().toLowerCase() : "";
-    if (verdict === "valid") return { valid: true, reason: "MODEL_VALID" };
-    if (verdict === "invalid") return { valid: false, reason: "MODEL_INVALID" };
+    const data = await res.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    const clean = content.trim().toUpperCase();
+    if (clean.includes("VALID")) return { valid: true, reason: "META_AI_VERIFIED" };
+    if (clean.includes("INVALID")) return { valid: false, reason: "META_AI_REJECTED" };
     return { valid: null, reason: "MODEL_INCONCLUSIVE" };
   } catch {
     // Network down, timeout, DNS: inconclusive, never settled.

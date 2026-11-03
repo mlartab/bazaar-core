@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bazaar — Buyer Dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <nav class="top">
+    <strong>BAZAAR<span class="accent">//</span></strong>
+    <a href="/">Home</a>
+    <a href="/marketplace">Marketplace</a>
+    <a href="/buyer">My Deals</a>
+    <span class="spacer"></span>
+    <span class="chain-tag" id="chain-tag" hidden>Base Sepolia</span>
+    <span class="wallet-wrap">
+      <button class="btn btn-outline" id="connect-wallet" type="button">Connect Wallet</button>
+      <div class="wallet-dropdown" id="wallet-dropdown" hidden>
+        <div class="wallet-addr-row"><code id="wallet-addr">—</code><button id="wallet-copy" type="button" class="btn btn-ghost" title="Copy full address">Copy</button></div>
+        <div class="sub" id="wallet-balance">CR Balance: —</div>
+        <a href="/buyer">My Deals →</a>
+        <a href="/seller">Seller Dashboard →</a>
+        <button id="wallet-disconnect" type="button" class="discon">Disconnect</button>
+      </div>
+    </span>
+    <a href="/login">Operator Login</a>
+  </nav>
+  <main>
+    <div class="market-band">
+      <h1>Buyer Dashboard</h1>
+      <p class="sub">Your active deals, wallet balance, and next actions — private to your wallet.</p>
+    </div>
+    <section class="card" id="buyer-balance-card" aria-label="Wallet balance">
+      <div class="card-head">
+        <h2>Wallet</h2>
+      </div>
+      <div class="wallet-line"><code id="buyer-addr">—</code><span class="sub" id="buyer-balance">CR Balance: —</span></div>
+    </section>
+    <section class="card" id="my-deals" aria-label="Your deals" style="margin-top: 12px">
+      <div class="card-head">
+        <h2>Your deals</h2>
+        <div class="card-tools"><button class="btn btn-ghost" id="my-deals-toggle" aria-expanded="true">Hide</button></div>
+      </div>
+      <div id="my-deals-body"><div class="deals-empty"><svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="6" y="14" width="32" height="20" rx="4" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5 4"/><path d="M6 20h32" stroke="#94A3B8" stroke-width="2"/><circle cx="22" cy="29" r="3" stroke="#EA580C" stroke-width="2"/></svg><p>No deals yet. Browse the marketplace to hire a seller.</p><p><a href="/marketplace">Browse agents →</a></p></div></div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="container">
+      <strong>BAZAAR//</strong>
+      <span>Trust layer for agent commerce.</span>
+      <span class="mono">Schema -&gt; Referee -&gt; State -&gt; Ledger</span>
+    </div>
+  </footer>
+  <script src="/utils.js"></script>
+  <script src="/buyer.js"></script>
+</body>
+</html>

@@ -3,7 +3,8 @@
 // directory and audit log. A slow poll backs up the stream. Reads are keyless except the admin subtree, which needs the
 // Bearer secret. Only moderation POSTs, each with a fresh Idempotency-Key.
 
-const $ = (id) => document.getElementById(id);
+// Shared via utils.js in the browser; standalone fallback when run alone.
+const $ = globalThis.$ ?? ((id) => document.getElementById(id));
 const SECRET_KEY = "bazaar-admin-secret";
 let paused = false;
 let timer = null;
@@ -105,19 +106,7 @@ async function adminFetch(path, { method = "GET", body, idempotency = false } = 
 }
 
 // Toast notifications: non-blocking, top-right, auto-dismissing.
-function toast(message, kind = "info") {
-  const holder = $("toasts");
-  if (holder === null) return;
-  const el = document.createElement("div");
-  el.className = `toast toast-${kind}`;
-  el.textContent = message;
-  holder.appendChild(el);
-  requestAnimationFrame(() => el.classList.add("show"));
-  setTimeout(() => {
-    el.classList.remove("show");
-    setTimeout(() => el.remove(), 300);
-  }, 4200);
-}
+const toast = globalThis.toast ?? ((message) => console.log(message));
 
 // Generic modal: renders title/sub/body/actions into the shared #modal
 // shell. Backdrop click, the ✕ button, and Escape all cancel; focus lands
@@ -289,15 +278,34 @@ function telemetryStamp(at) {
   }
 }
 
-function telemetryLine(e) {
-  const stamp = telemetryStamp(e.at);
+// Rung badge for a telemetry event: colored pill + short label. The text
+// beside it stays escaped, so agent-influenced previews cannot inject.
+function telemetryRung(e) {
   if (e.type === "AI_THINKING") {
     const rung = String(e.rung ?? "").toUpperCase();
-    const label = rung === "SAM3" ? "SAM3: Grounding deliverable..."
-      : rung === "MUSE_SPARK" ? "MUSE SPARK: Inspecting schema..."
-      : rung === "GLIMMER" ? "GLIMMER: Referee review..."
-      : `${rung || "AI"}: Thinking...`;
-    return `[${stamp}] 🟡 ${label}`;
+    if (rung === "SAM3") return ["rung-sam3", "SAM3"];
+    if (rung === "MUSE_SPARK") return ["rung-spark", "SPARK"];
+    if (rung === "GLIMMER") return ["rung-glimmer", "GLIMMER"];
+    return ["rung-spark", rung === "" ? "AI" : rung];
+  }
+  if (e.type === "AI_VERDICT") {
+    const verdict = String(e.verdict ?? "").toUpperCase();
+    if (verdict === "SETTLED" || verdict === "VALID") return ["rung-valid", "VALID"];
+    if (verdict === "REJECTED" || verdict === "INVALID") return ["rung-invalid", "INVALID"];
+    return ["rung-frozen", "FROZEN"];
+  }
+  if (e.type === "SETTLED") return ["rung-valid", "VALID"];
+  if (e.type === "REFUNDED") return ["rung-invalid", "INVALID"];
+  return ["rung-frozen", "FROZEN"];
+}
+
+function telemetryText(e) {
+  if (e.type === "AI_THINKING") {
+    const rung = String(e.rung ?? "").toUpperCase();
+    if (rung === "SAM3") return "Grounding deliverable…";
+    if (rung === "MUSE_SPARK") return "Inspecting schema…";
+    if (rung === "GLIMMER") return "Referee review…";
+    return "Thinking…";
   }
   if (e.type === "AI_VERDICT") {
     const verdict = String(e.verdict ?? "").toUpperCase();
@@ -308,27 +316,32 @@ function telemetryLine(e) {
     const detail = typeof e.commitment === "string" && e.commitment !== ""
       ? ` [VERIFIED PRIVATE DATA] Hash: ${e.commitment.slice(0, 8)}...`
       : (typeof e.preview === "string" && e.preview !== "" ? ` "${e.preview.slice(0, 100)}"` : "");
-    if (verdict === "SETTLED" || verdict === "VALID") return `[${stamp}] 🟢 VALID: Escrow released${reason}.${detail}`;
-    if (verdict === "REJECTED" || verdict === "INVALID") return `[${stamp}] 🔴 INVALID: Buyer refunded${reason}.${detail}`;
-    return `[${stamp}] ⚪ INCONCLUSIVE: escrow frozen${reason}.${detail}`;
+    if (verdict === "SETTLED" || verdict === "VALID") return `Escrow released${reason}.${detail}`;
+    if (verdict === "REJECTED" || verdict === "INVALID") return `Buyer refunded${reason}.${detail}`;
+    return `Escrow frozen${reason}.${detail}`;
   }
-  if (e.type === "SETTLED") return `[${stamp}] 🟢 VALID: Escrow released.`;
-  if (e.type === "REFUNDED") return `[${stamp}] 🔴 INVALID: Buyer refunded.`;
-  if (e.type === "INSPECTION_INCONCLUSIVE") return `[${stamp}] ⚪ INCONCLUSIVE: escrow frozen.`;
+  if (e.type === "SETTLED") return "Escrow released.";
+  if (e.type === "REFUNDED") return "Buyer refunded.";
+  if (e.type === "INSPECTION_INCONCLUSIVE") return "Escrow frozen.";
   return null;
 }
 
 function pushTelemetry(e) {
-  const line = e !== null && typeof e === "object" ? telemetryLine(e) : null;
-  if (line === null) return;
+  const text = e !== null && typeof e === "object" ? telemetryText(e) : null;
+  if (text === null) return;
   const holder = $("ai-telemetry");
   if (holder === null) return;
   const idle = holder.querySelector(".sub");
   if (idle !== null && holder.children.length === 1) idle.remove();
+  const [cls, label] = telemetryRung(e);
   const el = document.createElement("div");
   el.className = "ai-line";
   if (typeof e.dealId === "string") el.dataset.dealId = e.dealId;
-  el.textContent = line;
+  el.innerHTML = `<span class="rung ${cls}">${esc(label)}</span>` +
+    `<span class="t-dim">[${esc(telemetryStamp(e.at))}]</span> ${esc(text)}` +
+    (typeof e.dealId === "string" ? ` <button class="btn btn-ghost" data-open-deal="${esc(e.dealId)}" title="Open ${esc(e.dealId)} in Deal Detail">open</button>` : "");
+  const opener = el.querySelector("[data-open-deal]");
+  if (opener !== null) opener.addEventListener("click", () => showDeal(opener.dataset.openDeal));
   holder.appendChild(el);
   while (holder.children.length > TELEMETRY_CAP) holder.firstChild.remove();
   holder.scrollTop = holder.scrollHeight;
@@ -391,7 +404,8 @@ function renderVerify(result, agents, deals) {
       ? `<li class="sub">No verdicts yet.</li>`
       : terminal.map((d) => `<li data-deal-id="${esc(d.id)}"><code>${esc(d.id)}</code> ` +
         `<span class="${d.state === "SETTLED" ? "s-done" : "s-rejected"}">${esc(d.state)}</span>` +
-        (typeof d.close_reason === "string" && d.close_reason !== "" ? ` <span class="sub">${esc(d.close_reason)}</span>` : "") + `</li>`).join("");
+        (typeof d.close_reason === "string" && d.close_reason !== "" ? ` <span class="sub">${esc(d.close_reason)}</span>` : "") +
+        (typeof d.payout_tx_hash === "string" && d.payout_tx_hash !== "" ? ` ${txLink(d.payout_tx_hash)}` : "") + `</li>`).join("");
   }
   // AI telemetry card: SSE-owned (pushTelemetry appends live lines), so the
   // poll only guarantees the placeholder survives re-renders elsewhere.
@@ -451,15 +465,7 @@ function groupLogLines(entries) {
   return groups;
 }
 
-function esc(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[ch]);
-}
+const esc = globalThis.esc ?? ((value) => String(value ?? ""));
 
 // Side drawer: row clicks land here as well as in the section detail pane,
 // so the operator never loses context while scrolling a long table.
@@ -489,8 +495,35 @@ function renderAttention(pendingCount, frozenDeals, rejectedDeals) {
 const PAGE_SIZE = 25;
 const tables = {};
 
+const txLink = globalThis.txLink ?? ((hash) => "");
+
+// 4-node deal stepper: Negotiating -> Escrow -> Verifying -> Settled.
+// Protocol states fold onto nodes (AGREED/ESCROW_LOCKED/EXECUTING/
+// DELIVERED ride Escrow; REJECTED branches red off the reached node).
+function stepperHTML(state) {
+  const nodes = ["Negotiating", "Escrow", "Verifying", "Settled"];
+  const stage = state === "SETTLED" ? 4
+    : state === "VERIFYING" || state === "DELIVERED" ? 3
+    : state === "ESCROW_LOCKED" || state === "EXECUTING" || state === "AGREED" ? 2
+    : 1;
+  const rejected = state === "REJECTED";
+  return `<div class="stepper" data-state="${esc(state)}">` + nodes.map((label, i) => {
+    const n = i + 1;
+    const cls = rejected && n === stage
+      ? "rejected"
+      : rejected || n < stage ? "done" : n === stage ? (state === "VERIFYING" ? "frozen" : "active") : "";
+    const dot = rejected && n === stage ? "✕" : n < stage || (!rejected && n <= stage && state === "SETTLED") ? "✓" : String(n);
+    return `${i > 0 ? `<div class="step-bar${n <= stage ? " done" : ""}"></div>` : ""}<div class="step ${cls}"><span class="step-dot">${dot}</span><span class="step-label">${label}</span></div>`;
+  }).join("") + `</div>`;
+}
+
 function dealRowHTML(d) {
-  return `<tr data-id="${esc(d.id)}" data-deal-id="${esc(d.id)}" data-state="${esc(d.state)}" data-price="${d.price ?? ""}" data-buyer="${esc(d.buyer ?? "")}" data-seller="${esc(d.seller ?? "")}"><td data-deal-id="${esc(d.id)}">${esc(d.id)}</td><td>${pill(d.state)}</td><td>${esc(d.buyer ?? "")}</td><td>${esc(d.seller ?? "")}</td><td data-price="${d.price ?? ""}">${d.price ?? ""}</td><td>${expiresIn(d)}</td></tr>`;
+  const funding = txLink(d.pay_tx_hash);
+  const payout = txLink(d.payout_tx_hash);
+  const proofs = funding !== "" || payout !== ""
+    ? `<br /><span class="sub">fund ${funding === "" ? "—" : funding} · out ${payout === "" ? "—" : payout}</span>`
+    : "";
+  return `<tr data-id="${esc(d.id)}" data-deal-id="${esc(d.id)}" data-state="${esc(d.state)}" data-price="${d.price ?? ""}" data-buyer="${esc(d.buyer ?? "")}" data-seller="${esc(d.seller ?? "")}"><td data-deal-id="${esc(d.id)}">${esc(d.id)}${proofs}</td><td>${pill(d.state)}</td><td>${esc(d.buyer ?? "")}</td><td>${esc(d.seller ?? "")}</td><td data-price="${d.price ?? ""}">${d.price ?? ""}</td><td>${expiresIn(d)}</td></tr>`;
 }
 
 function auditRowHTML(e) {
@@ -633,7 +666,8 @@ async function tick() {
       fetchJSON("/api/admin/audit"),
     ]);
     const { stats, deals, logs } = dash.result;
-    const agents = agentsBody.result.agents;
+    // Buyers are customers: moderation surfaces only ever list sellers.
+    const agents = agentsBody.result.agents.filter((a) => a?.role === "seller");
     const audit = auditBody.result.audit;
     $("m-active").textContent = stats.activeDeals;
     $("m-tvl").textContent = stats.tvl;
@@ -725,6 +759,7 @@ async function showDeal(id) {
   try {
     const body = await fetchJSON(`/api/deals/${encodeURIComponent(id)}`);
     setDetail("detail", body.result);
+    maybeDealHeader(body.result);
     openDrawer(`Deal ${id}`, JSON.stringify(body.result, null, 2));
     await maybeMoneyCard(body.result.deal);
     await maybeFrozenBanner(body.result);
@@ -732,6 +767,22 @@ async function showDeal(id) {
     $("detail").textContent = `Failed to load ${id}: ${err.message}`;
     openDrawer(`Deal ${id}`, `Failed to load ${id}: ${err.message}`);
   }
+}
+
+// Deal header: the 4-node stepper plus funding/payout Basescan links,
+// prepended above the detail rows (same pattern as the money card).
+function maybeDealHeader(result) {
+  const node = $("detail");
+  if (node === null || result?.deal == null) return;
+  const funding = txLink(result.pay_tx_hash);
+  const payout = txLink(result.payout_tx_hash);
+  const header = document.createElement("div");
+  header.setAttribute("data-deal-id", result.deal.id);
+  header.innerHTML = stepperHTML(result.deal.state) +
+    (funding !== "" || payout !== ""
+      ? `<p class="sub">Funding ${funding === "" ? "—" : funding} · Payout ${payout === "" ? "—" : payout}</p>`
+      : "");
+  node.insertAdjacentElement("afterbegin", header);
 }
 
 // Money card: live buyer/seller ledger snapshot from the admin money
@@ -784,13 +835,11 @@ async function maybeFrozenBanner(result) {
   const banner = document.createElement("div");
   banner.className = "frozen-banner";
   const frozen = status !== "ACTIVE";
-  banner.innerHTML = frozen
-    ? `<span>⚠️ Settlement frozen — seller is ${esc(status)}. ` +
-      `<button data-frozen-reinstate="${esc(deal.seller)}" data-frozen-deal="${esc(deal.id)}">Reinstate seller</button> ` +
-      `<button data-frozen-reinspect="${esc(deal.id)}">Reinspect deal</button> ` +
-      `<button data-frozen-refund="${esc(deal.id)}">Force refund</button></span>`
-    : `<span>⚠️ Deal ${esc(deal.id)} is VERIFYING — seller reinstated. ` +
-      `<button data-frozen-reinspect="${esc(deal.id)}">Reinspect deal</button></span>`;
+  banner.innerHTML = `<span>⚠️ Deal ${esc(deal.id)} stuck in VERIFYING (seller is ${esc(status)}). ` +
+    `You can Reinspect, or Force Refund to return funds to the buyer. ` +
+    (frozen ? `<button data-frozen-reinstate="${esc(deal.seller)}" data-frozen-deal="${esc(deal.id)}">Reinstate seller</button> ` : "") +
+    `<button data-frozen-reinspect="${esc(deal.id)}">Reinspect deal</button> ` +
+    `<button data-frozen-refund="${esc(deal.id)}">Force refund</button></span>`;
   node.insertAdjacentElement("afterbegin", banner);
   const reinstate = banner.querySelector("[data-frozen-reinstate]");
   if (reinstate !== null) {
@@ -871,8 +920,9 @@ function agentActions(a) {
   const btn = (verb, label, cls) => `<button class="${cls}" data-id="${esc(a.id)}" data-verb="${verb}">${label}</button>`;
   const edit = `<button class="tab" data-edit="${esc(a.id)}">Edit</button>`;
   const del = `<button class="reject" data-delete="${esc(a.id)}">Delete</button>`;
-  if (a.status === "PENDING") return `${btn("approve", "Approve", "approve")} ${btn("reject", "Reject", "reject")} ${edit} ${del}`;
-  if (a.status === "ACTIVE") return `${btn("suspend", "Suspend", "suspend")} ${btn("retire", "Retire", "retire")} ${edit} ${del}`;
+  const grad = a.probation === 1 ? ` <button class="tab btn-graduate" data-graduate="${esc(a.id)}">Graduate</button>` : "";
+  if (a.status === "PENDING") return `${btn("approve", "Approve", "approve")} ${btn("reject", "Reject", "reject")} ${edit} ${del}${grad}`;
+  if (a.status === "ACTIVE") return `${btn("suspend", "Suspend", "suspend")} ${btn("retire", "Retire", "retire")} ${edit} ${del}${grad}`;
   if (a.status === "SUSPENDED") return `${btn("approve", "Approve", "approve")} ${edit} ${del}`;
   return `${edit} ${del}`;
 }
@@ -1045,6 +1095,22 @@ function renderAgentTable(tbody, rows, isQueue) {
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       askDelete(btn.dataset.delete);
+    });
+  }
+  for (const btn of tbody.querySelectorAll("button[data-graduate]")) {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try {
+        await adminFetch(`/api/admin/agents/${encodeURIComponent(btn.dataset.graduate)}/graduate`, {
+          method: "POST",
+          body: {},
+          idempotency: true,
+        });
+        toast(`Agent ${btn.dataset.graduate} graduated from probation.`, "success");
+        tick();
+      } catch (err) {
+        toast(`Graduate failed: ${err.code ?? err.message}`, "error");
+      }
     });
   }
 }

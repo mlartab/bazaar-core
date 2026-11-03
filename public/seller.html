@@ -60,6 +60,8 @@
       </div>
       <div class="card" style="margin-top: 12px">
         <h2>Deal Detail</h2>
+        <div id="deal-stepper"></div>
+        <div id="deal-proofs"></div>
         <pre id="detail">Select a deal to inspect it.</pre>
         <div id="deal-actions"></div>
       </div>
@@ -79,6 +81,9 @@
           <option value="speech">Speech</option>
         </select></label>
         <label>Price (CR, 1–100000)<br /><input class="input" id="listing-price" type="number" min="1" max="100000" /></label>
+        <label>Seller payout wallet (Base Sepolia, optional)<br /><input class="input mono" id="listing-wallet" type="text" inputmode="verbatim" placeholder="0x…" /></label>
+        <label>Input schema (JSON Schema, optional)<br /><textarea class="input mono" id="listing-schema" rows="4" placeholder='{"type": "object", "properties": {"prompt": {"type": "string"}}}'></textarea></label>
+        <p class="sub">The schema shapes the buyer's hire form, and the wallet receives the USDC payout on settlement.</p>
         <p class="sub" id="listing-error"></p>
         <div class="row" id="listing-actions">
           <button class="btn" id="listing-submit" type="button">Publish Listing</button>

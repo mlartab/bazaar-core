@@ -460,7 +460,9 @@ test("protocol: mcp tools endpoint lists the tool schemas", async () => {
   assert.ok(Array.isArray(body.tools));
   const byName = Object.fromEntries(body.tools.map((t) => [t.name, t]));
   assert.deepEqual(Object.keys(byName).sort(), [
+    "bazaar_accept_deal",
     "bazaar_deliver_work",
+    "bazaar_get_deal",
     "bazaar_open_deal",
     "bazaar_pay_deal",
     "bazaar_search_marketplace",
@@ -479,6 +481,9 @@ test("protocol: mcp tools endpoint lists the tool schemas", async () => {
   assert.deepEqual(byName.bazaar_deliver_work.inputSchema.properties, {
     deal_id: { type: "string" },
     delivery_url: { type: "string" },
+  });
+  assert.deepEqual(byName.bazaar_get_deal.inputSchema.properties, {
+    deal_id: { type: "string" },
   });
 });
 

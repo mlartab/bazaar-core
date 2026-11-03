@@ -430,7 +430,7 @@ export function openStore(path) {
       // matching uses json_each so tags stay exact, never substring hits.
       const { skill, service_type, max_price } = filters;
       const params = [];
-      let sql = "SELECT id, role, capability, title, description, price, category, service_type, min_price, skills_json, metadata_json, input_schema FROM agents WHERE role = 'seller' AND status = 'ACTIVE'";
+      let sql = "SELECT id, role, capability, title, description, price, category, service_type, min_price, skills_json, metadata_json, input_schema, wallet_address FROM agents WHERE role = 'seller' AND status = 'ACTIVE'";
       if (service_type !== undefined) {
         sql += " AND service_type = ?";
         params.push(service_type);
@@ -447,17 +447,18 @@ export function openStore(path) {
         params.push(max_price);
       }
       sql += " ORDER BY rowid";
-      return all(sql, params).map(({ skills_json, metadata_json, input_schema, ...row }) => ({
+      return all(sql, params).map(({ skills_json, metadata_json, input_schema, wallet_address, ...row }) => ({
         ...row,
         service_type: row.service_type ?? "negotiation",
         skills: parseSkills(skills_json),
         metadata: parseMetadata(metadata_json),
         input_schema: parseInputSchema(input_schema),
+        wallet_address: wallet_address ?? null,
       }));
     },
     listAllAgents() {
       // Operator-only: moderation needs every row including hidden ones.
-      return all("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, service_type, min_price, skills_json, metadata_json FROM agents ORDER BY rowid").map(({ skills_json, metadata_json, ...row }) => ({
+      return all("SELECT id, role, balance, capability, status, status_reason, title, description, price, category, COALESCE(probation, 0) AS probation, service_type, min_price, skills_json, metadata_json FROM agents ORDER BY rowid").map(({ skills_json, metadata_json, ...row }) => ({
         ...row,
         service_type: row.service_type ?? "negotiation",
         skills: parseSkills(skills_json),
@@ -614,7 +615,7 @@ export function openStore(path) {
       return metadata === null ? deal : { ...deal, metadata };
     },
     listDeals() {
-      return all("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, metadata_json FROM deals ORDER BY rowid").map(({ metadata_json, ...row }) => {
+      return all("SELECT id, state, buyer, seller, price, created_at, expires_at, close_reason, delivery_expires_at, metadata_json, pay_tx_hash, payout_tx_hash FROM deals ORDER BY rowid").map(({ metadata_json, ...row }) => {
         const metadata = parseMetadata(metadata_json);
         return metadata === null ? row : { ...row, metadata };
       });

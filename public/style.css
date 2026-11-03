@@ -1310,7 +1310,7 @@ body[data-density="compact"] #log { height: 300px; }
 .table th, .table td { padding: 10px 12px; }
 .table tbody tr { transition: background 0.12s ease; }
 .table td:last-child { white-space: nowrap; }
-.table td .approve, .table td .reject, .table td .tab, .table td .suspend, .table td .retire {
+.table td .approve, .table td .reject, .table td .tab, .table td .suspend, .table td .retire, .table td .btn-graduate {
   padding: 6px 14px;
   font-size: 13px;
   border-radius: var(--radius-pill);
@@ -1431,3 +1431,625 @@ body[data-density="compact"] #log { height: 300px; }
 .verify-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
 .verify-list li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .verify-list code { font-size: 12px; }
+
+/* ============================================================
+   Premium Enterprise Light Mode (Stripe/Linear/Vercel reading)
+   Flat surfaces, 1px borders, one restrained shadow level.
+   No glassmorphism: no backdrop blur, no translucent panels.
+   ============================================================ */
+:root {
+  --bg: #f8fafc;
+  --surface: #ffffff;
+  --surface-2: #f1f5f9;
+  --border: #e2e8f0;
+  --ink: #0f172a;
+  --ink-2: #475569;
+  --primary: #ea580c;
+  --primary-dim: #fff7ed;
+  --terminal-bg: #0b1220;
+  --success: #137333;
+  --success-dim: #d9f0e0;
+  --warning: #b25e09;
+  --warning-dim: #fdf0dc;
+  --danger: #c5221f;
+  --danger-dim: #fce8e6;
+  --teal: #0e7490;
+  --teal-dim: #cffafe;
+  --violet: #6d28d9;
+  --violet-dim: #ede9fe;
+  --terminal: var(--terminal-bg);
+  --terminal-ink: #e4e6eb;
+  --mono: ui-monospace, "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  /* Remap of the legacy palette onto the enterprise tokens. */
+  --card: var(--surface);
+  --card-2: var(--surface-2);
+  --line: var(--border);
+  --indigo: var(--primary);
+  --indigo-dim: var(--primary-dim);
+  --green: var(--success);
+  --green-dim: var(--success-dim);
+  --amber: var(--warning);
+  --amber-dim: var(--warning-dim);
+  --red: var(--danger);
+  --red-dim: var(--danger-dim);
+  --cyan: var(--teal);
+  --cyan-dim: var(--teal-dim);
+  --purple: var(--violet);
+  --purple-dim: var(--violet-dim);
+  --meta-blue: var(--primary);
+  --meta-text: var(--ink);
+  --meta-text-muted: var(--ink-2);
+  --meta-bg-light: var(--surface);
+  --meta-border: var(--border);
+  --radius: 12px;
+  --radius-md: 12px;
+  --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(15, 27, 45, 0.05);
+  --elev-1: 0 1px 2px rgba(15, 27, 45, 0.05);
+  --elev-2: 0 4px 12px rgba(15, 27, 45, 0.06);
+  --elev-3: 0 12px 32px rgba(15, 27, 45, 0.14);
+  --elev-hover: 0 8px 24px rgba(0, 95, 204, 0.12);
+}
+
+body { background: var(--bg); color: var(--ink); font-family: var(--sans); }
+h1, h2, h3 { letter-spacing: -0.02em; }
+a { color: var(--primary); }
+
+/* Cards: flat surface, 1px border, single quiet shadow. */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--elev-1);
+}
+.card h2 { color: var(--ink-2); }
+
+/* Buttons: one primary voice per page. */
+button { background: var(--primary); font-family: var(--sans); }
+.btn { background: var(--primary); color: #fff; border-radius: 8px; }
+.btn-secondary { color: var(--primary); border-color: var(--primary); }
+.btn-secondary:hover { background: var(--primary-dim); }
+.btn-ghost:hover { background: var(--surface-2); }
+.btn-danger { background: var(--danger); }
+
+/* Tables: sticky headers, quiet rows, mono identifiers. */
+.table th {
+  color: var(--ink-2);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--surface);
+}
+.table tbody tr:hover { background: rgba(0, 95, 204, 0.05); }
+.table-wrap thead th { background: var(--surface); }
+.tx-link {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--primary);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.tx-link:hover { text-decoration: underline; }
+.addr { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+
+/* Pills keep the status palette on the new tokens. */
+.pill, .chip, .badge, .s-running, .s-done, .s-rejected { font-family: var(--mono); }
+
+/* Chain + wallet presence. */
+.chain-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--success);
+  background: var(--success-dim);
+  border-radius: 100px;
+  padding: 2px 10px;
+  white-space: nowrap;
+}
+.chain-tag::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.wallet-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.wallet-line button {
+  background: transparent;
+  color: var(--primary);
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 2px 10px;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+.usdc-sub {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+/* Landing: hero stat strip under the CTAs. */
+.stat-strip {
+  display: flex;
+  justify-content: center;
+  gap: 40px;
+  flex-wrap: wrap;
+  margin-top: 40px;
+}
+.stat { display: grid; gap: 2px; }
+.stat b { font-family: var(--mono); font-size: 24px; font-weight: 800; color: var(--ink); }
+.stat span { font-size: 13px; color: var(--ink-2); }
+
+/* Landing: tech stack strip, monochrome tiles. */
+.tech-strip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 12px;
+}
+.tech-tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 16px;
+  text-align: center;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+}
+.tech-tile strong { font-size: 15px; }
+.tech-tile span { font-size: 12px; color: var(--ink-2); }
+@media (max-width: 1024px) { .tech-strip { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px) { .tech-strip { grid-template-columns: 1fr; } }
+
+/* Landing: live proof section beside the terminal. */
+.live-proof { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 24px; align-items: start; }
+@media (max-width: 1024px) { .live-proof { grid-template-columns: 1fr; } }
+.proof-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.proof-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.proof-item code { font-size: 12px; }
+
+/* Deal State Stepper: Negotiating -> Escrow -> Verifying -> Settled. */
+.stepper { display: flex; align-items: flex-start; margin: 12px 0 4px; }
+.step { display: grid; justify-items: center; gap: 6px; min-width: 72px; }
+.step-dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--ink-2);
+}
+.step-label { font-family: var(--mono); font-size: 10px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.05em; }
+.step-bar { flex: 1; height: 2px; background: var(--border); margin-top: 10px; border-radius: 2px; }
+.step.done .step-dot { background: var(--primary); border-color: var(--primary); color: #fff; }
+.step.done .step-label { color: var(--ink); }
+.step.done + .step-bar, .step-bar.done { background: var(--primary); }
+.step.active .step-dot { border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 4px var(--primary-dim); }
+.step.active .step-label { color: var(--primary); font-weight: 700; }
+.step.frozen .step-dot { border-color: var(--warning); color: var(--warning); box-shadow: 0 0 0 4px var(--warning-dim); }
+.step.frozen .step-label { color: var(--warning); font-weight: 700; }
+.step.rejected .step-dot { background: var(--danger); border-color: var(--danger); color: #fff; }
+.step.rejected .step-label { color: var(--danger); font-weight: 700; }
+
+/* Dark AI telemetry terminal. Single dark element per surface. */
+.ai-terminal, .live-terminal { background: var(--terminal); }
+.ai-terminal { color: var(--terminal-ink); max-height: 320px; }
+.ai-terminal .btn-ghost { color: var(--terminal-ink); }
+.ai-terminal .btn-ghost:hover { background: rgba(255, 255, 255, 0.1); }
+.ai-terminal .sub { color: rgba(228, 230, 235, 0.55); }
+.rung {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 1px 8px;
+  border-radius: 100px;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+.rung-sam3 { background: var(--violet-dim); color: var(--violet); }
+.rung-spark { background: var(--primary-dim); color: var(--primary); }
+.rung-glimmer { background: var(--warning-dim); color: var(--warning); }
+.rung-valid { background: var(--success-dim); color: var(--success); }
+.rung-invalid { background: var(--danger-dim); color: var(--danger); }
+.rung-frozen { background: var(--warning-dim); color: var(--warning); }
+
+/* Schema-driven hire form fields. */
+.schema-field { display: grid; gap: 6px; margin: 0 0 12px; }
+.schema-field > span { font-size: 13px; font-weight: 700; }
+.schema-field > span .req { color: var(--danger); }
+.schema-field small { font-size: 12px; color: var(--ink-2); }
+.schema-field input, .schema-field select, .schema-field textarea { width: 100%; }
+
+/* Admin 3-column shell: narrower rails, sticky verify rail. */
+.shell { grid-template-columns: 220px minmax(0, 1fr) 340px; }
+.verify {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+}
+@media (max-width: 1200px) {
+  .shell { grid-template-columns: 1fr; }
+  .verify { position: static; max-height: none; }
+}
+
+/* No glassmorphism anywhere: flat overlay, no blur. */
+.modal-backdrop { backdrop-filter: none; -webkit-backdrop-filter: none; }
+
+/* ============================================================
+   Web3 Orange pass: card lift, mono everywhere, timeline,
+   wallet dropdown, orange terminal, escrow pill glow.
+   ============================================================ */
+.card:hover:not(.modal-card) {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(234, 88, 12, 0.15);
+}
+@media (prefers-reduced-motion: reduce) {
+  .card:hover:not(.modal-card) { transform: none; }
+}
+
+/* Every machine identifier reads in JetBrains Mono. */
+.wallet-line, .tx-link, .addr, .agent-id, .receipt,
+.ai-terminal, .live-terminal-body, .terminal-body {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* Deal state pills: soft backgrounds, bold text. Escrow glows orange. */
+.pill.escrow, .chip.escrow, .badge.escrow {
+  background: #fff7ed;
+  color: #ea580c;
+  box-shadow: 0 0 8px rgba(234, 88, 12, 0.35);
+}
+
+/* How-it-works timeline: one horizontal rail, four nodes. */
+.how-timeline { display: flex; align-items: flex-start; margin: 8px 0 4px; }
+.how-node { display: grid; justify-items: center; gap: 8px; min-width: 120px; text-align: center; }
+.how-node .how-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--border);
+  z-index: 1;
+}
+.how-node strong { font-size: 14px; }
+.how-node span { font-size: 12px; color: var(--ink-2); max-width: 22ch; }
+.how-rail { flex: 1; height: 3px; background: var(--border); border-radius: 2px; margin-top: 9px; }
+.how-node.done .how-dot { border-color: var(--primary); background: var(--primary); }
+.how-node.live .how-dot {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+  animation: how-pulse 1.6s ease-in-out infinite;
+}
+.how-node.settled .how-dot { border-color: var(--success); background: var(--success); }
+@keyframes how-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(234, 88, 12, 0.45); }
+  50% { box-shadow: 0 0 0 8px rgba(234, 88, 12, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .how-node.live .how-dot { animation: none; }
+}
+@media (max-width: 640px) {
+  .how-timeline { flex-direction: column; gap: 16px; }
+  .how-rail { width: 3px; height: 24px; margin: 0 0 0 9px; }
+}
+
+/* Wallet dropdown: anchored panel under the connect button. */
+.wallet-wrap { position: relative; display: inline-flex; }
+.wallet-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 260px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14);
+  padding: 12px 14px;
+  z-index: 40;
+  display: grid;
+  gap: 8px;
+}
+.wallet-dropdown[hidden] { display: none; }
+.wallet-dropdown .wallet-addr-row { display: flex; align-items: center; gap: 8px; }
+.wallet-dropdown .discon { color: var(--danger); background: transparent; border: 0; padding: 4px 0; text-align: left; font-weight: 700; cursor: pointer; }
+
+/* Live terminal: dark stage, orange readout. */
+.live-terminal { background: var(--terminal-bg); }
+.live-terminal-body { color: #fdba74; }
+.live-terminal-body .t-dim { color: rgba(253, 186, 116, 0.55); }
+.live-terminal-body .t-ok { color: #4ade80; }
+.ai-terminal { background: var(--terminal-bg); }
+
+/* ============================================================
+   2.0 Web3/AI Mission Control — Task 1: Global Foundation
+   Blueprint canvas, tactile buttons, mono machine data.
+   Taste filter: no purple/blue hero wash, no glassmorphism,
+   no emoji icons. Orange is the product accent per brief.
+   ============================================================ */
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  background-color: #F8FAFC;
+  background-image: radial-gradient(circle, #E2E8F0 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+body.landing {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+/* Cards: 1px border + 2px gradient top-accent, premium hover. */
+.card, .agent-card, .bento-card, .model, .trust-strip .tile, .sm-node, .proof-item, .modal-card {
+  position: relative;
+  border: 1px solid var(--border);
+}
+.card::before, .agent-card::before {
+  content: "";
+  position: absolute;
+  top: -1px; left: -1px; right: -1px;
+  height: 2px;
+  border-radius: 12px 12px 0 0;
+  background: linear-gradient(90deg, #EA580C, transparent);
+  pointer-events: none;
+}
+.card:hover:not(.modal-card), .agent-card:hover {
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12), 0 0 0 1px rgba(234, 88, 12, 0.12);
+}
+
+/* Typography: mono for ALL machine data, Inter for everything else. */
+code, pre, .mono, .receipt, #log, .terminal-body, .live-terminal-body,
+.ai-terminal, .addr, .tx-link, .agent-id, .profile-head .agent-id,
+.agent-card .agent-id, .detail-row dd, .money-tile > strong, .price-tag,
+.stat b, .sm-node .sm-count, .sm-flow, .step-label, .tl-phase, .tl-id,
+.pill, .chip, .badge, .s-running, .s-done, .s-rejected, .rung,
+.wallet-line, .chain-tag, #drawer-body {
+  font-family: 'JetBrains Mono', ui-monospace, Menlo, Consolas, monospace;
+}
+
+/* Buttons: tactile primary gradient, crisp secondary outline. */
+button, .btn {
+  background: linear-gradient(135deg, #EA580C, #F97316);
+  border: 1px solid #C2410C;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.25), 0 2px 6px rgba(234,88,12,0.35);
+  transition: filter 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+}
+button:hover, .btn:hover { filter: brightness(1.07); box-shadow: inset 0 1px 0 rgba(255,255,255,0.25), 0 4px 14px rgba(234,88,12,0.45); }
+button:active, .btn:active { transform: translateY(1px); filter: brightness(0.97); }
+.btn-secondary, .btn-outline, .btn-ghost {
+  background: transparent;
+  box-shadow: none;
+}
+.btn-secondary, .btn-outline {
+  color: #EA580C;
+  border: 2px solid #EA580C;
+}
+.btn-secondary:hover, .btn-outline:hover { background: #FFF7ED; filter: none; box-shadow: 0 0 0 3px rgba(234,88,12,0.15); }
+.btn-ghost { border: 1px solid transparent; color: var(--ink); }
+.btn-ghost:hover { background: var(--surface-2); box-shadow: none; }
+
+/* ============================================================
+   Task 2: Admin Console (Mission Control)
+   ============================================================ */
+/* Telemetry & Timeline: deep dark terminal. */
+#timeline, .ai-terminal, #log {
+  background: #0B1220;
+  color: #E2E8F0;
+  border: 1px solid #1E293B;
+}
+#timeline .sub, #timeline-empty, .ai-terminal .sub, #log .t-dim { color: #64748B; }
+.tl-block { background: #0B1220; border: 1px solid #1E293B; color: #E2E8F0; }
+.tl-action { color: #F8FAFC; }
+.tl-observe { color: #94A3B8; }
+.tl-id { color: #64748B; font-family: 'JetBrains Mono', monospace; }
+#log details.log-line code { color: #94A3B8; }
+/* Neon state colors. */
+.pill.settled, .chip.settled, .badge.settled, .s-done { color: #4ADE80; background: rgba(74,222,128,0.12); border-color: rgba(74,222,128,0.4); }
+.st-escrow, .pill.escrow, .chip.escrow, .badge.escrow { color: #FB923C; background: rgba(251,146,60,0.12); border-color: rgba(251,146,60,0.45); box-shadow: 0 0 8px rgba(234,88,12,0.35); }
+.pill.negotiating, .chip.negotiating, .badge.negotiating, .s-running { color: #60A5FA; background: rgba(96,165,250,0.12); border-color: rgba(96,165,250,0.4); }
+/* AI Telemetry pulsing orange border. */
+.verify .card:has(.ai-terminal), #ai-telemetry {
+  border-color: rgba(234,88,12,0.55);
+  animation: telemetry-pulse 2.4s ease-in-out infinite;
+}
+@keyframes telemetry-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(234,88,12,0.35); }
+  50% { box-shadow: 0 0 0 4px rgba(234,88,12,0.12); }
+}
+/* Tables: data density + row hover + hash links. */
+table, .table { font-size: 13px; }
+tbody tr:hover, .table tbody tr:hover { background: #F1F5F9; }
+.tx-link::after { content: ""; }
+.table td .tx-link, td .tx-link { font-size: 12px; }
+/* Empty states: no blank boxes. */
+.empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding: 48px 20px;
+  color: #64748B;
+  background-image: radial-gradient(circle, #E2E8F0 1px, transparent 1px);
+  background-size: 16px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+}
+.empty-state svg { opacity: 0.55; }
+.empty-state p { margin: 4px 0 0; font-size: 14px; }
+
+/* ============================================================
+   Task 3: Marketplace (Storefront)
+   ============================================================ */
+.agent-card { overflow: hidden; }
+.agent-card::after {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, #EA580C, #F97316);
+  pointer-events: none;
+}
+.agent-card .agent-foot .hire-btn, .agent-card .hire-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px 22px;
+}
+.agent-card .agent-foot { flex-wrap: wrap; }
+.agent-card .agent-foot .price-tag { flex: 1; }
+/* Your Deals empty state: dashed box + glowing CTA. */
+.deals-empty {
+  border: 1px dashed #CBD5E1;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  background-image: radial-gradient(circle, #E2E8F0 1px, transparent 1px);
+  background-size: 16px 16px;
+  color: #64748B;
+}
+.deals-empty .btn-glow {
+  background: linear-gradient(135deg, #EA580C, #F97316);
+  color: #fff;
+  border: 1px solid #C2410C;
+  border-radius: 8px;
+  padding: 10px 28px;
+  font-weight: 700;
+  box-shadow: 0 0 0 4px rgba(234,88,12,0.18), 0 4px 16px rgba(234,88,12,0.45);
+  animation: cta-glow 2.2s ease-in-out infinite;
+}
+@keyframes cta-glow {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(234,88,12,0.18), 0 4px 16px rgba(234,88,12,0.45); }
+  50% { box-shadow: 0 0 0 8px rgba(234,88,12,0.08), 0 4px 22px rgba(234,88,12,0.6); }
+}
+
+/* ============================================================
+   Task 4: Landing (Pitch) — hero mesh + 4-node timeline.
+   ============================================================ */
+.meta-hero { position: relative; overflow: hidden; isolation: isolate; }
+.meta-hero::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  z-index: -1;
+  background:
+    radial-gradient(ellipse 40% 35% at 20% 30%, rgba(234,88,12,0.22), transparent 70%),
+    radial-gradient(ellipse 35% 40% at 80% 20%, rgba(249,115,22,0.20), transparent 70%),
+    radial-gradient(ellipse 45% 40% at 60% 80%, rgba(234,88,12,0.14), transparent 70%),
+    radial-gradient(ellipse 80% 70% at 50% 30%, #FFF7ED 0%, #ffffff 70%);
+  animation: mesh-drift 18s ease-in-out infinite alternate;
+}
+@keyframes mesh-drift {
+  0% { transform: translate3d(-2%, -1%, 0) scale(1); }
+  50% { transform: translate3d(2%, 1%, 0) scale(1.04); }
+  100% { transform: translate3d(-1%, 2%, 0) scale(1.02); }
+}
+/* True 4-node timeline: connecting line + 4 circles. */
+.how-timeline { position: relative; align-items: flex-start; }
+.how-node .how-dot {
+  width: 22px; height: 22px;
+  border-width: 3px;
+}
+.how-node.done .how-dot { border-color: #EA580C; background: #EA580C; }
+.how-node.live .how-dot {
+  border-color: #EA580C;
+  background: #FFF7ED;
+  animation: node-pulse 1.8s ease-out infinite;
+}
+@keyframes node-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(234,88,12,0.5); }
+  70% { box-shadow: 0 0 0 12px rgba(234,88,12,0); }
+  100% { box-shadow: 0 0 0 0 rgba(234,88,12,0); }
+}
+.how-node.settled .how-dot { border-color: #16A34A; background: #16A34A; }
+@media (prefers-reduced-motion: reduce) {
+  .meta-hero::before, .verify .card:has(.ai-terminal), #ai-telemetry,
+  .deals-empty .btn-glow, .how-node.live .how-dot { animation: none; }
+}
+
+/* ============================================================
+   IA restructure + conflict fixes: private buyer page, admin
+   table bounds, two-line trust rows, unclipped dropdown.
+   ============================================================ */
+/* Buyer dashboard: reuse agent grid for deal cards, banner stays subtle. */
+.deals-banner { margin: 4px 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.deals-banner .btn { padding: 6px 16px; font-size: 13px; }
+#buyer-balance-card .wallet-line { font-size: 14px; }
+/* Admin tables: fixed layout so the Decide column never pushes out. */
+.table[data-table="reviews"], .table[data-table="agents"] { table-layout: fixed; }
+.table[data-table="reviews"] th:last-child, .table[data-table="reviews"] td:last-child,
+.table[data-table="agents"] th:last-child, .table[data-table="agents"] td:last-child {
+  width: 128px;
+  min-width: 128px;
+  white-space: nowrap;
+  text-align: right;
+}
+.table[data-table="reviews"] td[data-agent-id], .table[data-table="agents"] td[data-agent-id],
+.table[data-table="reviews"] td:first-child, .table[data-table="agents"] td:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Graduate button: distinct neutral-green voice next to lifecycle verbs. */
+.table td .btn-graduate {
+  background: linear-gradient(135deg, #137333, #1a9e47);
+  border: 1px solid #0d5c26;
+  color: #fff;
+}
+/* Right rail: two-line trust rows — id + score, then tx count below. */
+#verify-trust li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  align-items: center;
+}
+#verify-trust li code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+#verify-trust li .sub { grid-column: 1 / -1; }
+/* Navbar owns the dropdown: never clip it. */
+nav.top { position: relative; z-index: 100; overflow: visible; }
+.wallet-dropdown a { color: var(--primary); font-weight: 600; font-size: 13px; text-decoration: none; }
+.wallet-dropdown a:hover { text-decoration: underline; }
+
+/* Who-hires-whom panels: three compact direction cards. */
+.hire-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.hire-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px 18px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+.hire-card h3 { margin: 0; font-size: 16px; }
+.hire-card p { margin: 0; font-size: 13px; color: var(--ink-2); line-height: 1.6; }
+.hire-card .mono { font-size: 12px; color: var(--primary); }
+@media (max-width: 1024px) { .hire-grid { grid-template-columns: 1fr; } }

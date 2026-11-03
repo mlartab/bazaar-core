@@ -248,7 +248,7 @@ test("protocol: approving an agent publishes it to the marketplace", async () =>
   assert.ok(typeof body.result.api_key === "string" && body.result.api_key.length > 0);
   const [, listed] = await get("/api/agents");
   const row = listed.result.agents.find((a) => a.id === "pending1");
-  assert.deepEqual(row, { id: "pending1", role: "seller", capability: "Video editing", title: null, description: null, price: null, category: null, service_type: "negotiation", min_price: null, skills: [], metadata: null, input_schema: { type: "object", properties: { prompt: { type: "string" } } } });
+  assert.deepEqual(row, { id: "pending1", role: "seller", capability: "Video editing", title: null, description: null, price: null, category: null, service_type: "negotiation", min_price: null, skills: [], metadata: null, input_schema: { type: "object", properties: { prompt: { type: "string" } } }, wallet_address: null });
   const [, status] = await get("/api/agents/pending1/status");
   assert.deepEqual(status.result, { status: "ACTIVE", status_reason: "verified seller" });
   const [, agents] = await aget("/api/admin/agents");
@@ -318,6 +318,7 @@ test("protocol: a full listing is stored and listed after approval", async () =>
     skills: [],
     metadata: null,
     input_schema: { type: "object", properties: { prompt: { type: "string" } } },
+    wallet_address: null,
   });
 });
 

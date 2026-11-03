@@ -256,6 +256,17 @@ export const MCP_TOOLS = [
     },
   },
   {
+    name: "bazaar_get_deal",
+    description: "Check the status and state of an active deal.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        deal_id: { type: "string" },
+      },
+      required: ["deal_id"],
+    },
+  },
+  {
     name: "bazaar_deliver_work",
     description: "Submit a deliverable for a paid deal, starting inspection.",
     inputSchema: {
@@ -265,6 +276,15 @@ export const MCP_TOOLS = [
         delivery_url: { type: "string" },
       },
       required: ["deal_id", "delivery_url"],
+    },
+  },
+  {
+    name: "bazaar_accept_deal",
+    description: "Accept an open deal as a party (NEGOTIATING → AGREED). Auto-reads the deal price.",
+    inputSchema: {
+      type: "object",
+      properties: { deal_id: { type: "string" } },
+      required: ["deal_id"],
     },
   },
 ];
@@ -1044,6 +1064,24 @@ export function createApp(dbPath) {
           );
           return [status, wrap(payload)];
         }
+        case "bazaar_get_deal": {
+          // Party-scoped like the dispatcher: the direct handler never sees
+          // identity, so the adapter gates here. Unknown ids 404 with the
+          // handler's exact code.
+          const deal = store.getDeal(args.deal_id);
+          if (deal === null) {
+            return [404, wrap(error("NO_SUCH_DEAL", `no deal with id ${args.deal_id}`))];
+          }
+          if (agent.id !== deal.buyer && agent.id !== deal.seller) {
+            return [403, wrap(error("FORBIDDEN", `agent ${agent.id} is not a party of deal ${args.deal_id}`))];
+          }
+          const [status, payload] = await handlers["GET /api/deals/:id"](
+            undefined,
+            args.deal_id,
+            agent,
+          );
+          return [status, wrap(payload)];
+        }
         case "bazaar_pay_deal": {
           const [status, payload] = await handlers["POST /api/deals/:id/pay"](
             { tx_hash: args.tx_hash },
@@ -1055,6 +1093,21 @@ export function createApp(dbPath) {
         case "bazaar_deliver_work": {
           const [status, payload] = await handlers["POST /api/deals/:id/delivery"](
             { id: `del-${randomUUID().slice(0, 8)}`, deliveryUrl: args.delivery_url },
+            args.deal_id,
+            agent,
+          );
+          return [status, wrap(payload)];
+        }
+        case "bazaar_accept_deal": {
+          const deal = store.getDeal(args.deal_id);
+          if (deal === null) {
+            return [404, wrap(error("NO_SUCH_DEAL", `no deal with id ${args.deal_id}`))];
+          }
+          if (agent.id !== deal.buyer && agent.id !== deal.seller) {
+            return [403, wrap(error("FORBIDDEN", `agent ${agent.id} is not a party of deal ${args.deal_id}`))];
+          }
+          const [status, payload] = await handlers["POST /api/deals/:id/moves"](
+            { key: `mcp-accept-${randomUUID().slice(0, 8)}`, kind: "ACCEPT", price: deal.price },
             args.deal_id,
             agent,
           );
@@ -1168,7 +1221,12 @@ export function createApp(dbPath) {
       }
       let funded = false;
       try {
-        funded = await verifyTransaction(body.tx_hash, crToUsdc(deal.price), deal.buyer);
+        if (process.env.DEMO_SAFE === "true" && typeof body.tx_hash === "string" && body.tx_hash.startsWith("0x")) {
+          logger.warn({ dealId: id, tx: body.tx_hash }, "DEMO_SAFE: skipping on-chain verification, ledger lock is real");
+          funded = true;
+        } else {
+          funded = await verifyTransaction(body.tx_hash, crToUsdc(deal.price), deal.buyer);
+        }
       } catch {
         funded = false;
       }
@@ -1323,6 +1381,7 @@ export function createApp(dbPath) {
     "GET /api/deals/:id": (_body, id, agent) => {
       const deal = store.getDeal(id);
       if (deal === null) return [404, error("NO_SUCH_DEAL", `no deal with id ${id}`)];
+      const row = store.getDealRow(id);
       return [
         200,
         {
@@ -1332,7 +1391,9 @@ export function createApp(dbPath) {
           ...turnContext(deal, agent),
           // Live escrow for this deal, null once released or before any
           // lock: agents verify funds without correlating a second endpoint.
-          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, store.getDealRow(id)), escrow: ledger.locks[id]?.amount ?? null, actions: ACTIONS },
+          // Chain proofs ride alongside so consoles link out to Basescan
+          // without a second round trip; getDeal's frozen shape is untouched.
+          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, row), escrow: ledger.locks[id]?.amount ?? null, pay_tx_hash: row?.pay_tx_hash ?? null, payout_tx_hash: row?.payout_tx_hash ?? null, actions: ACTIONS },
         },
       ];
     },
@@ -1631,6 +1692,7 @@ export function createApp(dbPath) {
     "/login": "login.html",
     "/admin": "admin.html",
     "/seller": "seller.html",
+    "/buyer": "buyer.html",
   };
   const PUBLIC_DIR = new URL("../public/", import.meta.url);
   const serveStatic = (pathname) => {

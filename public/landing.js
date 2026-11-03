@@ -10,12 +10,6 @@ const escPreview = (value) =>
     "'": "&#39;",
   })[ch]);
 
-function trustScorePreview(id) {
-  let h = 0;
-  for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return 1 + (h % 5);
-}
-
 async function loadPreview() {
   const grid = document.getElementById("preview-grid");
   if (grid === null) return;
@@ -30,17 +24,19 @@ async function loadPreview() {
     }
     grid.innerHTML = agents
       .map((a) => {
-        const price = Number.isInteger(a.price) ? `${a.price} CR` : "Price on request";
-        const score = trustScorePreview(a.id);
-        let bars = "";
-        for (let i = 1; i <= 5; i += 1) bars += `<i class="${i <= score ? "on" : ""}"></i>`;
+        const price = Number.isInteger(a.price)
+          ? `${a.price} CR<span class="usdc-sub">≈ ${(a.price / 1000).toFixed(a.price % 1000 === 0 ? 0 : 3)} USDC</span>`
+          : "Price on request";
+        const wallet = typeof a.wallet_address === "string" && a.wallet_address !== ""
+          ? `<div class="wallet-line" title="Seller payout wallet">${escPreview(a.wallet_address.slice(0, 6))}…${escPreview(a.wallet_address.slice(-4))}</div>`
+          : "";
         return (
           `<div class="card agent-card" data-agent-id="${escPreview(a.id)}" data-role="${escPreview(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-category="${escPreview(a.category ?? "")}" data-title="${escPreview(a.title ?? a.id)}">` +
           `<div class="term-head">GET /api/agents/${escPreview(a.id)}</div>` +
           `<h2 class="agent-title" title="${escPreview(a.title ?? a.id)}"><a href="/marketplace">${escPreview(a.title ?? a.id)}</a></h2>` +
           `<div class="agent-id">${escPreview(a.id)}</div>` +
+          wallet +
           `<p class="agent-desc" title="${escPreview(a.description ?? "")}">${escPreview(a.description ?? "No description yet.")}</p>` +
-          `<div class="trust-row" data-trust-score="${score}" data-agent-id="${escPreview(a.id)}"><span class="trust-bars">${bars}</span><span>trust ${score}/5 (beta)</span></div>` +
           `<div class="agent-foot"><span class="price-tag${Number.isInteger(a.price) ? "" : " missing"}">${price}</span></div>` +
           `</div>`
         );
@@ -114,6 +110,37 @@ function initReveal() {
   for (const el of els) seen.observe(el);
 }
 
+// Hero stat strip + live proof list: real approved listings from the
+// same public keyless endpoint as the preview grid. Counts and prices
+// are live; the CR→USDC line uses the protocol's fixed 1000:1 rate.
+async function loadStats() {
+  const stat = document.getElementById("stat-agents");
+  const proof = document.getElementById("proof-list");
+  if (stat === null && proof === null) return;
+  try {
+    const res = await fetch("/api/agents");
+    if (!res.ok) throw new Error(`GET /api/agents -> ${res.status}`);
+    const { result } = await res.json();
+    if (stat !== null) stat.textContent = String(result.agents.length);
+    if (proof !== null) {
+      if (result.agents.length === 0) {
+        proof.innerHTML = `<li class="sub">No approved listings yet.</li>`;
+        return;
+      }
+      proof.innerHTML = result.agents.slice(0, 4).map((a) => {
+        const price = Number.isInteger(a.price)
+          ? `${a.price} CR <span class="usdc-sub">≈ ${(a.price / 1000).toFixed(a.price % 1000 === 0 ? 0 : 3)} USDC</span>`
+          : `Price on request`;
+        return `<li class="proof-item"><code>${escPreview(a.title ?? a.id)}</code><span>${price}</span></li>`;
+      }).join("");
+    }
+  } catch {
+    if (stat !== null) stat.textContent = "–";
+    if (proof !== null) proof.innerHTML = `<li class="sub">Could not reach the protocol.</li>`;
+  }
+}
+
 loadPreview().catch(() => {});
 loadTerminal().catch(() => {});
+loadStats().catch(() => {});
 initReveal();

@@ -192,8 +192,49 @@ async function renderStorefront(me) {
 }
 
 function priceTag(price) {
-  if (Number.isInteger(price)) return `<span class="price-tag">${price} CR</span>`;
+  if (Number.isInteger(price)) {
+    return `<span class="price-tag">${price} CR<span class="usdc-sub">≈ ${(price / 1000).toFixed(price % 1000 === 0 ? 0 : 3)} USDC</span></span>`;
+  }
   return `<span class="price-tag missing">Price on request</span>`;
+}
+
+// Basescan link for a verified chain hash. Anything else renders nothing.
+function txLink(hash) {
+  if (typeof hash !== "string" || !hash.startsWith("0x")) return "";
+  return `<a class="tx-link" href="https://sepolia.basescan.org/tx/${esc(hash)}" target="_blank" rel="noopener">${esc(hash.slice(0, 6))}…${esc(hash.slice(-4))} ↗</a>`;
+}
+
+// 4-node deal stepper: Negotiating -> Escrow -> Verifying -> Settled.
+// Protocol states fold onto nodes (AGREED/ESCROW_LOCKED/EXECUTING/
+// DELIVERED ride Escrow; REJECTED branches red off the reached node).
+function stepperHTML(state) {
+  const nodes = ["Negotiating", "Escrow", "Verifying", "Settled"];
+  const stage = state === "SETTLED" ? 4
+    : state === "VERIFYING" || state === "DELIVERED" ? 3
+    : state === "ESCROW_LOCKED" || state === "EXECUTING" || state === "AGREED" ? 2
+    : 1;
+  const rejected = state === "REJECTED";
+  return `<div class="stepper" data-state="${esc(state)}">` + nodes.map((label, i) => {
+    const n = i + 1;
+    const cls = rejected && n === stage
+      ? "rejected"
+      : rejected || n < stage ? "done" : n === stage ? (state === "VERIFYING" ? "frozen" : "active") : "";
+    const dot = rejected && n === stage ? "✕" : n < stage || (!rejected && n <= stage && state === "SETTLED") ? "✓" : String(n);
+    return `${i > 0 ? `<div class="step-bar${n <= stage ? " done" : ""}"></div>` : ""}<div class="step ${cls}"><span class="step-dot">${dot}</span><span class="step-label">${label}</span></div>`;
+  }).join("") + `</div>`;
+}
+
+function renderDealHeader(result) {
+  const stepper = $("deal-stepper");
+  const proofs = $("deal-proofs");
+  const deal = result?.deal;
+  if (stepper !== null) stepper.innerHTML = deal ? stepperHTML(deal.state) : "";
+  if (proofs === null) return;
+  const funding = txLink(result?.pay_tx_hash);
+  const payout = txLink(result?.payout_tx_hash);
+  proofs.innerHTML = funding !== "" || payout !== ""
+    ? `<p class="sub">Funding ${funding === "" ? "—" : funding} · Payout ${payout === "" ? "—" : payout}</p>`
+    : "";
 }
 
 async function load() {
@@ -238,9 +279,11 @@ async function showDeal(id) {
   selected = id;
   try {
     const { result } = await api(`/api/deals/${encodeURIComponent(id)}`);
+    renderDealHeader(result);
     $("detail").textContent = JSON.stringify(result, null, 2);
     renderActions(result.deal, result.moves);
   } catch (err) {
+    renderDealHeader(null);
     $("detail").textContent = `Failed to load ${id}: ${err.message}`;
     $("deal-actions").innerHTML = "";
   }
@@ -386,15 +429,36 @@ $("listing-submit").addEventListener("click", async () => {
     $("listing-error").textContent = "Price must be a whole number from 1 to 100000 CR.";
     return;
   }
+  const wallet = $("listing-wallet").value.trim();
+  if (wallet !== "" && !/^0x[0-9a-fA-F]{40}$/.test(wallet)) {
+    $("listing-error").textContent = "Payout wallet must be a 0x-prefixed 20-byte address, or left blank.";
+    return;
+  }
+  let input_schema;
+  const rawSchema = $("listing-schema").value.trim();
+  if (rawSchema !== "") {
+    try {
+      input_schema = JSON.parse(rawSchema);
+    } catch {
+      $("listing-error").textContent = "Input schema is not valid JSON.";
+      return;
+    }
+    if (typeof input_schema !== "object" || input_schema === null || Array.isArray(input_schema)) {
+      $("listing-error").textContent = "Input schema must be a JSON object.";
+      return;
+    }
+  }
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24) || "listing";
   try {
-    const data = await api("/api/agents", {
-      method: "POST",
-      body: { id: `${me.id}:${slug}-${Date.now().toString(36)}`, role: "seller", title, description, price, category },
-    });
+    const body = { id: `${me.id}:${slug}-${Date.now().toString(36)}`, role: "seller", title, description, price, category };
+    if (wallet !== "") body.wallet_address = wallet;
+    if (input_schema !== undefined) body.input_schema = input_schema;
+    const data = await api("/api/agents", { method: "POST", body });
     $("listing-modal").hidden = true;
     $("listing-title").value = "";
     $("listing-desc").value = "";
+    $("listing-wallet").value = "";
+    $("listing-schema").value = "";
     $("listing-error").textContent = "";
     $("detail").textContent =
       `Listing ${data.result.agent.id} registered and queued for operator approval. ` +

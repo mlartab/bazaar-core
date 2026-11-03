@@ -12,7 +12,17 @@
     <a href="/">Home</a>
     <a href="/marketplace">Marketplace</a>
     <span class="spacer"></span>
-    <button class="btn" id="connect-wallet" type="button">Connect Wallet</button>
+    <span class="chain-tag" id="chain-tag" hidden>Base Sepolia</span>
+    <span class="wallet-wrap">
+      <button class="btn btn-outline" id="connect-wallet" type="button">Connect Wallet</button>
+      <div class="wallet-dropdown" id="wallet-dropdown" hidden>
+        <div class="wallet-addr-row"><code id="wallet-addr">—</code><button id="wallet-copy" type="button" class="btn btn-ghost" title="Copy full address">Copy</button></div>
+        <div class="sub" id="wallet-balance">CR Balance: —</div>
+        <a href="/buyer">My Deals →</a>
+        <a href="/seller">Seller Dashboard →</a>
+        <button id="wallet-disconnect" type="button" class="discon">Disconnect</button>
+      </div>
+    </span>
     <a href="/login">Operator Login</a>
   </nav>
   <main>
@@ -44,13 +54,7 @@
       <div id="active-chips" class="chip-row"></div>
       <span id="result-count" class="sub" aria-live="polite"></span>
     </div>
-    <section class="card" id="my-deals" aria-label="Your deals">
-      <div class="card-head">
-        <h2>Your deals</h2>
-        <div class="card-tools"><button class="btn btn-ghost" id="my-deals-toggle" aria-expanded="true">Hide</button></div>
-      </div>
-      <div id="my-deals-body"><p class="sub">No deals yet. Hire a seller below.</p></div>
-    </section>
+    <p class="deals-banner sub">Looking for your active deals? <button class="btn btn-outline" id="banner-connect" type="button">Connect Wallet</button> <a href="/buyer">Go to Buyer Dashboard →</a></p>
     <div id="agents"></div>
     <div class="modal-backdrop" id="modal" hidden>
       <div class="card modal-card">
@@ -70,6 +74,7 @@
       <span class="mono">Schema -&gt; Referee -&gt; State -&gt; Ledger</span>
     </div>
   </footer>
+  <script src="/utils.js"></script>
   <script src="/marketplace.js"></script>
 </body>
 </html>

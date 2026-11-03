@@ -52,8 +52,8 @@ export function registrationPerIpPerHour(env = process.env) {
 // Negotiation window: how long NEGOTIATING/AGREED may sit before the
 // session sweeper rejects. Read at boot like the other timing envs.
 export function negotiationWindowMs(env = process.env) {
-  const n = Number(env.NEGOTIATION_WINDOW_MS ?? 60000);
-  return Number.isInteger(n) && n >= 1 ? n : 60000;
+  const n = Number(env.NEGOTIATION_WINDOW_MS ?? 300000);
+  return Number.isInteger(n) && n >= 1 ? n : 300000;
 }
 // Inspection window: how long VERIFYING may wait for the AI verdict.
 // Read at boot and passed into the session manager like the sweeps.

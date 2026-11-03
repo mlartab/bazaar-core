@@ -1,18 +1,9 @@
 // Public agent directory: read-only list, no secret needed. Renders one
 // flat grid of approved agents from GET /api/agents, filtered client-side.
 // Hiring POSTs a real deal; every other fetch here is a GET.
-const $ = (id) => document.getElementById(id);
-
-// Agent-supplied strings land in innerHTML, so escape everything first:
-// a malicious title must never become executable markup (stored XSS).
-const esc = (value) =>
-  String(value ?? "").replace(/[&<>"']/g, (ch) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&#39;",
-  })[ch]);
+// Shared via utils.js in the browser; standalone fallbacks when run alone.
+const $ = globalThis.$ ?? ((id) => document.getElementById(id));
+const esc = globalThis.esc ?? ((value) => String(value ?? ""));
 
 const CATEGORY_LABELS = {
   image_gen: "Image Gen",
@@ -42,12 +33,18 @@ function skillsRow(a) {
   return tags === "" ? "" : `<div class="skill-row" aria-label="Skills">${tags}</div>`;
 }
 
-function priceTag(price) {
-  if (Number.isInteger(price)) {
-    return `<span class="price-tag">${price} CR</span>`;
-  }
-  return `<span class="price-tag missing">Price on request</span>`;
+const usdcSub = globalThis.usdcSub ?? ((price) => "");
+const priceTag = globalThis.priceTag ?? ((price) => String(price ?? ""));
+
+// Seller payout wallet, straight from the public directory row. Absent
+// means the seller never linked one — render nothing, never a placeholder.
+function walletLine(a) {
+  const w = a !== null && typeof a === "object" ? a.wallet_address : null;
+  if (typeof w !== "string" || !w.startsWith("0x")) return "";
+  return `<div class="wallet-line" title="Seller payout wallet">${esc(w.slice(0, 6))}…${esc(w.slice(-4))}</div>`;
 }
+
+const txLink = globalThis.txLink ?? ((hash) => "");
 
 // Hire flow: a buyer hiring a seller opens a DEAL, never a listing edit.
 // The form collects the brief (prompt) and the budget, then POSTs
@@ -56,31 +53,63 @@ function priceTag(price) {
 // replays instead of double-opening.
 let hireSeller = null;
 
-function toast(message) {
-  let el = document.getElementById("hire-toast");
-  if (el === null) {
-    el = document.createElement("div");
-    el.id = "hire-toast";
-    el.setAttribute("role", "status");
-    el.style.cssText = "position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;color:#fff;padding:10px 16px;border-radius:8px;z-index:9999;max-width:90vw;";
-    document.body.appendChild(el);
+const toast = globalThis.toast ?? ((message) => {});
+
+// Schema-driven hire: the seller's input_schema decides the brief form.
+// Standard JSON Schema ({ properties, required }) and the flat shorthand
+// ({ field: "type" }) both render; an empty schema falls back to the
+// single prompt brief the protocol defaults to.
+function schemaEntries(schema) {
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) {
+    return [{ name: "prompt", rule: { type: "string", description: "Describe the task." }, required: true }];
   }
-  el.textContent = message;
-  el.hidden = false;
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => {
-    el.hidden = true;
-  }, 4000);
+  const standard =
+    typeof schema.properties === "object" && schema.properties !== null && !Array.isArray(schema.properties);
+  const properties = standard ? schema.properties : schema;
+  const names = Object.keys(properties).filter(
+    (n) => standard || (n !== "type" && n !== "required" && n !== "properties"),
+  );
+  if (names.length === 0) {
+    return [{ name: "prompt", rule: { type: "string", description: "Describe the task." }, required: true }];
+  }
+  const required = Array.isArray(schema.required) ? schema.required : names;
+  return names.map((name) => ({ name, rule: properties[name] ?? { type: "string" }, required: required.includes(name) }));
+}
+
+function schemaFieldHTML({ name, rule, required }) {
+  const t = typeof rule === "string" ? rule : rule?.type ?? "string";
+  const desc = typeof rule === "object" && rule !== null && typeof rule.description === "string" ? rule.description : "";
+  const label = `${esc(name)}${required ? ' <span class="req" aria-hidden="true">*</span>' : ""}`;
+  const hint = desc !== "" ? `<small>${esc(desc)}</small>` : "";
+  const attrs = `data-field="${esc(name)}" data-type="${esc(t)}"${required ? ' data-required="1"' : ""}`;
+  if (Array.isArray(rule?.enum) && rule.enum.length > 0) {
+    const opts = rule.enum.map((o) => `<option value="${esc(String(o))}">${esc(String(o))}</option>`).join("");
+    return `<div class="schema-field"><span>${label}</span>${hint}<select ${attrs}>${opts}</select></div>`;
+  }
+  if (t === "boolean") {
+    return `<div class="schema-field"><span>${label}</span>${hint}<input type="checkbox" ${attrs} /></div>`;
+  }
+  if (t === "integer" || t === "number") {
+    const step = t === "integer" ? ` step="1"` : ` step="any"`;
+    return `<div class="schema-field"><span>${label}</span>${hint}<input class="input" type="number"${step} inputmode="numeric" ${attrs} /></div>`;
+  }
+  if (name === "prompt" || name === "description" || name === "brief") {
+    return `<div class="schema-field"><span>${label}</span>${hint}<textarea class="input" rows="4" placeholder="Describe the task..." ${attrs}></textarea></div>`;
+  }
+  return `<div class="schema-field"><span>${label}</span>${hint}<input class="input" type="text" ${attrs} /></div>`;
 }
 
 function hire(id, price) {
-  hireSeller = { id, budget: Number.isInteger(price) ? price : "" };
+  const agent = allAgents.find((a) => a.id === id) ?? null;
+  hireSeller = { id, budget: Number.isInteger(price) ? price : "", schema: agent?.input_schema ?? null };
+  const fields = schemaEntries(hireSeller.schema);
   setModal(
-    "",
+    `Step 1 of 2 — the brief, shaped by the seller's schema`,
     1,
     `Hire ${esc(hireSeller.id)}`,
-    `<label>What do you need done?<br /><textarea id="hire-prompt" class="input" rows="4" placeholder="Describe the task..."></textarea></label>` +
-      `<label>How much are you willing to pay? (CR)<br /><input id="hire-budget" class="input" type="number" min="1" step="1" inputmode="numeric" value="${hireSeller.budget}" /></label>`,
+    fields.map(schemaFieldHTML).join("") +
+      `<label>How much are you willing to pay? (CR)<br /><input id="hire-budget" class="input" type="number" min="1" step="1" inputmode="numeric" value="${hireSeller.budget}" /></label>` +
+      (Number.isInteger(price) ? `<p class="sub">≈ ${(price / 1000).toFixed(price % 1000 === 0 ? 0 : 3)} USDC settles on Base Sepolia.</p>` : ""),
     [
       { label: "Cancel", kind: "ghost", onClick: () => { $("modal").hidden = true; } },
       { label: "Open deal", onClick: submitHire },
@@ -88,17 +117,49 @@ function hire(id, price) {
   );
 }
 
-async function submitHire() {
-  const promptEl = $("hire-prompt");
-  const budgetEl = $("hire-budget");
-  const prompt = promptEl !== null ? promptEl.value.trim() : "";
-  const budget = budgetEl !== null ? Number(budgetEl.value) : NaN;
-  if (prompt === "") {
-    toast("Please describe what you need done.");
-    return;
+function collectBrief() {
+  const metadata = {};
+  const inputs = document.querySelectorAll("#modal-body [data-field]");
+  for (const el of inputs) {
+    const name = el.dataset.field;
+    const t = el.dataset.type ?? "string";
+    const required = el.dataset.required === "1";
+    let value;
+    if (t === "boolean") {
+      value = el.checked;
+    } else if (t === "integer" || t === "number") {
+      const raw = el.value.trim();
+      if (raw === "") {
+        if (required) return { error: `Please fill in “${name}”.` };
+        continue;
+      }
+      value = Number(raw);
+      if (!Number.isFinite(value) || (t === "integer" && !Number.isInteger(value))) {
+        return { error: `“${name}” must be ${t === "integer" ? "a whole number" : "a number"}.` };
+      }
+    } else {
+      value = el.value.trim();
+      if (value === "") {
+        if (required) return { error: `Please fill in “${name}”.` };
+        continue;
+      }
+    }
+    metadata[name] = value;
   }
+  if (Object.keys(metadata).length === 0) return { error: "Please describe what you need done." };
+  return { metadata };
+}
+
+async function submitHire() {
+  const budgetEl = $("hire-budget");
+  const budget = budgetEl !== null ? Number(budgetEl.value) : NaN;
   if (!Number.isInteger(budget) || budget < 1) {
     toast("Budget must be a positive whole number of CR.");
+    return;
+  }
+  const brief = collectBrief();
+  if (brief.error) {
+    toast(brief.error);
     return;
   }
   try {
@@ -108,7 +169,7 @@ async function submitHire() {
     // buyer key: anonymous hires die at 401.
     const opened = await apiPost(
       "/api/deals",
-      { buyer: buyer.id, seller: hireSeller.id, price: budget, metadata: { prompt } },
+      { buyer: buyer.id, seller: hireSeller.id, price: budget, metadata: brief.metadata },
       buyer.key,
       { idempotency: false },
     );
@@ -116,8 +177,7 @@ async function submitHire() {
     hireSeller = null;
     toast(`Deal ${opened.result.deal.id} opened at ${opened.result.deal.price} CR. Negotiation started.`);
     await loadMyDeals().catch(() => {});
-    const panel = $("my-deals");
-    if (panel !== null && typeof panel.scrollIntoView === "function") panel.scrollIntoView();
+    window.location.assign("/buyer");
   } catch (err) {
     toast(err.message ?? String(err));
   }
@@ -146,20 +206,7 @@ function modalFail(title, err) {
   setModal("", 0, title, `<p>${esc(err.message ?? String(err))}</p>`, []);
 }
 
-async function apiPost(path, body, agentKey, { idempotency = true } = {}) {
-  const headers = { "content-type": "application/json" };
-  // The protocol auto-generates a deterministic key when the header is
-  // missing, so callers that pass { idempotency: false } stay retry-safe
-  // without touching HTTP plumbing.
-  if (idempotency) headers["idempotency-key"] = crypto.randomUUID();
-  if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
-  const res = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
-  const data = await res.json();
-  if (!res.ok || data.ok !== true) {
-    throw new Error(`${data.error?.code ?? res.status}: ${data.error?.message ?? "request failed"}`);
-  }
-  return data;
-}
+const apiPost = globalThis.apiPost ?? (async () => { throw new Error("apiPost unavailable"); });
 
 const BUYER_KEY = "bazaar-buyer-identity";
 
@@ -190,20 +237,9 @@ async function ensureBuyer() {
 }
 
 
-function trustScore(id) {
-  let h = 0;
-  for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return 1 + (h % 5);
-}
-
-function trustRow(id) {
-  const score = trustScore(id);
-  let bars = "";
-  for (let i = 1; i <= 5; i += 1) {
-    bars += `<i class="${i <= score ? "on" : ""}"></i>`;
-  }
-  return `<div class="trust-row" data-trust-score="${score}" data-agent-id="${esc(id)}"><span class="trust-bars">${bars}</span><span>trust ${score}/5 (beta)</span></div>`;
-}
+// Trust is earned on-chain, not hashed from an id: per-agent settlement
+// rates live in the admin console's verification rail, so cards show the
+// seller's linked wallet and USDC terms instead of a fabricated score.
 
 // Each row owns a stable id so flips target the row, never a re-render:
 // no timers anywhere — a check lights only when its request resolves.
@@ -260,8 +296,8 @@ function cardHTML(a) {
     `<div class="badge-row"><span class="chip" data-category="${esc(a.category ?? "")}">${esc(categoryLabel(a.category))}</span>${serviceBadge(a)}</div>` +
     `<h2 class="agent-title" title="${esc(a.title ?? a.id)}">${esc(a.title ?? a.id)}</h2>` +
     `<div class="agent-id">${esc(a.id)}</div>` +
+    `${walletLine(a)}` +
     (desc === null ? "" : `<p class="agent-desc" title="${esc(desc)}">${esc(desc)}</p>`) +
-    `${trustRow(a.id)}` +
     `${skillsRow(a)}` +
     `<hr class="card-div" />` +
     `<div class="agent-foot">${priceTag(a.price)}<button class="btn hire-btn" data-id="${esc(a.id)}" data-price="${Number.isInteger(a.price) ? a.price : ""}">Hire Agent</button></div>` +
@@ -469,16 +505,7 @@ const DEAL_PILL = {
   REJECTED: "rejected",
 };
 
-async function apiGet(path, agentKey) {
-  const headers = {};
-  if (agentKey !== undefined) headers["x-agent-key"] = agentKey;
-  const res = await fetch(path, { headers });
-  const data = await res.json();
-  if (!res.ok || data.ok !== true) {
-    throw new Error(`${data.error?.code ?? res.status}: ${data.error?.message ?? "request failed"}`);
-  }
-  return data;
-}
+const apiGet = globalThis.apiGet ?? (async () => { throw new Error("apiGet unavailable"); });
 
 function dealCardHTML(detail) {
   const deal = detail.deal;
@@ -495,10 +522,18 @@ function dealCardHTML(detail) {
   } else {
     turn = `<p class="sub">Waiting on ${esc(waitingOn ?? "inspector")}.</p>`;
   }
+  // Chain proofs ride the detail payload (GET /api/deals/:id now returns
+  // pay_tx_hash / payout_tx_hash); list rows carry the dashboard's copies.
+  const funding = txLink(detail.pay_tx_hash ?? deal.pay_tx_hash) ;
+  const payout = txLink(detail.payout_tx_hash ?? deal.payout_tx_hash);
+  const proofs = funding !== "" || payout !== ""
+    ? `<div class="sub">Funding ${funding === "" ? "—" : funding} · Payout ${payout === "" ? "—" : payout}</div>`
+    : "";
   return `<div class="card deal-card" data-deal-id="${esc(deal.id)}">` +
     `<div class="badge-row"><span class="pill ${DEAL_PILL[deal.state] ?? "active"}">${esc(deal.state)}</span></div>` +
     `<div class="agent-id">${esc(deal.id)} → ${esc(deal.seller)}</div>` +
     `${priceTag(deal.price)}` +
+    `${proofs}` +
     `${turn}</div>`;
 }
 
@@ -533,7 +568,7 @@ async function loadMyDeals() {
   for (const d of deals) {
     try {
       const detail = await apiGet(`/api/deals/${encodeURIComponent(d.id)}`, buyer.key);
-      cards.push(dealCardHTML({ deal: detail.result.deal, waitingOn: detail.waitingOn, allowedMoves: detail.allowedMoves }));
+      cards.push(dealCardHTML({ deal: detail.result.deal, waitingOn: detail.waitingOn, allowedMoves: detail.allowedMoves, pay_tx_hash: detail.result.pay_tx_hash ?? null, payout_tx_hash: detail.result.payout_tx_hash ?? null }));
     } catch {
       cards.push(`<div class="card deal-card"><div class="agent-id">${esc(d.id)}</div><p class="sub">Could not load turn status.</p></div>`);
     }
@@ -547,8 +582,17 @@ async function payDeal(id) {
     toast("No buyer identity. Hire again to re-provision.");
     return;
   }
+  // Real settlement: the buyer funds the escrow wallet on-chain first,
+  // then hands the verified funding tx to the protocol. The server checks
+  // the Transfer event (amount, sender, escrow) before locking escrow.
+  const txHash = prompt("Paste the Base Sepolia USDC funding tx hash (0x…) for this deal:");
+  if (txHash === null) return;
+  if (!txHash.trim().startsWith("0x")) {
+    toast("That does not look like a tx hash — expected a 0x-prefixed hash.");
+    return;
+  }
   try {
-    await apiPost(`/api/deals/${encodeURIComponent(id)}/pay`, {}, buyer.key);
+    await apiPost(`/api/deals/${encodeURIComponent(id)}/pay`, { tx_hash: txHash.trim() }, buyer.key);
     toast(`Deal ${id} paid. Escrow locked.`);
   } catch (err) {
     toast(err.message ?? String(err));
@@ -593,7 +637,8 @@ async function acceptDeal(id, price) {
   await loadMyDeals();
 }
 
-$("my-deals-body").addEventListener("click", (e) => {
+const dealsBody = $("my-deals-body");
+if (dealsBody !== null) dealsBody.addEventListener("click", (e) => {
   const btn = e.target.closest("[data-pay],[data-offer],[data-accept]");
   if (btn === null) return;
   if (btn.hasAttribute("data-pay")) payDeal(btn.dataset.pay);
@@ -601,13 +646,20 @@ $("my-deals-body").addEventListener("click", (e) => {
   else if (btn.hasAttribute("data-accept")) acceptDeal(btn.dataset.accept, Number(btn.dataset.price));
 });
 
-$("my-deals-toggle").addEventListener("click", () => {
+const dealsToggle = $("my-deals-toggle");
+if (dealsToggle !== null) dealsToggle.addEventListener("click", () => {
   const body = $("my-deals-body");
-  const toggle = $("my-deals-toggle");
+  if (body === null) return;
   const hidden = body.hidden;
   body.hidden = !hidden;
-  toggle.textContent = hidden ? "Show" : "Hide";
-  toggle.setAttribute("aria-expanded", String(hidden));
+  dealsToggle.textContent = hidden ? "Show" : "Hide";
+  dealsToggle.setAttribute("aria-expanded", String(hidden));
+});
+
+const bannerConnect = $("banner-connect");
+if (bannerConnect !== null) bannerConnect.addEventListener("click", () => {
+  const walletBtn = $("connect-wallet");
+  if (walletBtn !== null) walletBtn.click();
 });
 
 load();
@@ -616,22 +668,73 @@ loadMyDeals();
 // Unified Identity Layer (SIWE): wallet sign-in that resolves to the
 // existing x-agent-key. Overwrites the auto-provisioned guest identity so
 // every later deal call authenticates as the wallet-linked agent.
-function truncateAddress(address) {
-  return `${address.slice(0, 4)}...${address.slice(-2)}`;
+const truncateAddress = globalThis.truncateAddress ?? ((address) => String(address ?? ""));
+
+function walletConnected() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(BUYER_KEY) ?? "null");
+    if (typeof stored?.wallet === "string" && stored.wallet.startsWith("0x")) return stored.wallet;
+  } catch {
+    // Corrupt entry: treated as disconnected.
+  }
+  return null;
+}
+
+// Balance line inside the dropdown: live buyer balance from GET /api/me.
+// Any failure (offline, expired key) leaves the placeholder — never an error.
+async function fillWalletDropdown(walletAddress) {
+  const addrEl = document.getElementById("wallet-addr");
+  const balEl = document.getElementById("wallet-balance");
+  if (addrEl !== null) addrEl.textContent = walletAddress;
+  if (balEl === null) return;
+  const stored = buyerIdentity();
+  if (stored === null) {
+    balEl.textContent = "CR Balance: —";
+    return;
+  }
+  try {
+    const me = await apiGet("/api/me", stored.key);
+    const bal = me.result?.balance;
+    balEl.textContent = `CR Balance: ${Number.isInteger(bal) ? `${bal} CR` : "—"}`;
+  } catch {
+    balEl.textContent = "CR Balance: —";
+  }
+}
+
+function setWalletConnected(btn, walletAddress) {
+  if (btn !== null) {
+    btn.textContent = truncateAddress(walletAddress);
+    btn.title = `Signed in as ${walletAddress} (Base Sepolia)`;
+    btn.className = "btn";
+  }
+  const tag = document.getElementById("chain-tag");
+  if (tag !== null) tag.hidden = false;
+  fillWalletDropdown(walletAddress).catch(() => {});
+}
+
+function setWalletDisconnected(btn) {
+  if (btn !== null) {
+    btn.textContent = "Connect Wallet";
+    btn.title = "Sign in with your wallet (SIWE)";
+    btn.className = "btn btn-outline";
+  }
+  const tag = document.getElementById("chain-tag");
+  if (tag !== null) tag.hidden = true;
+  const dd = document.getElementById("wallet-dropdown");
+  if (dd !== null) dd.hidden = true;
+}
+
+function toggleWalletDropdown() {
+  const dd = document.getElementById("wallet-dropdown");
+  if (dd !== null) dd.hidden = !dd.hidden;
 }
 
 function paintWalletButton() {
   const btn = $("connect-wallet");
   if (btn === null) return;
-  try {
-    const stored = JSON.parse(localStorage.getItem(BUYER_KEY) ?? "null");
-    if (typeof stored?.wallet === "string" && stored.wallet.startsWith("0x")) {
-      btn.textContent = truncateAddress(stored.wallet);
-      btn.disabled = true;
-    }
-  } catch {
-    // Corrupt entry: leave the button active.
-  }
+  const wallet = walletConnected();
+  if (wallet !== null) setWalletConnected(btn, wallet);
+  else setWalletDisconnected(btn);
 }
 
 async function connectWallet() {
@@ -663,15 +766,28 @@ async function connectWallet() {
     if (!verifyRes.ok || verifyData.ok !== true) {
       throw new Error(`${verifyData.error?.code ?? verifyRes.status}: ${verifyData.error?.message ?? "verify failed"}`);
     }
+    // Guest-deal guard: a web-buyer-* identity holds deals that the wallet
+    // identity cannot see. Ask before overwriting; declining keeps the guest.
+    const previous = buyerIdentity();
+    if (previous !== null && typeof previous.id === "string" && previous.id.startsWith("web-buyer-") && typeof confirm === "function") {
+      const link = confirm("You have active deals as a guest. Link your wallet?\n\nYour guest deals stay on the protocol under the guest id; this view will refresh to your wallet's deals.");
+      if (!link) {
+        toast("Staying on your guest identity.");
+        return;
+      }
+      toast("Wallet linked. Guest deals remain on the protocol under the guest id.");
+    }
     try {
       localStorage.setItem(BUYER_KEY, JSON.stringify({ id: verifyData.result.agent_id, key: verifyData.result.api_key, wallet: walletAddress }));
     } catch {
       // Blocked storage: session still works until reload.
     }
-    if (btn !== null) {
-      btn.textContent = truncateAddress(walletAddress);
-      btn.disabled = true;
+    try {
+      sessionStorage.removeItem("just_disconnected");
+    } catch {
+      // Blocked storage: the fresh identity already proves sign-in.
     }
+    setWalletConnected(btn, walletAddress);
     toast(`Signed in as ${truncateAddress(walletAddress)}.`);
     await loadMyDeals().catch(() => {});
   } catch (err) {
@@ -681,6 +797,46 @@ async function connectWallet() {
 
 {
   const btn = document.getElementById("connect-wallet");
-  if (btn !== null) btn.addEventListener("click", connectWallet);
+  if (btn !== null) btn.addEventListener("click", () => {
+    // Connected: the button toggles the wallet menu. Disconnected: it
+    // starts SIWE sign-in. No fetch or storage change happens on toggle.
+    if (walletConnected() !== null) toggleWalletDropdown();
+    else connectWallet();
+  });
+  const copy = document.getElementById("wallet-copy");
+  if (copy !== null) copy.addEventListener("click", async () => {
+    const wallet = walletConnected();
+    if (wallet === null) return;
+    try {
+      await navigator.clipboard.writeText(wallet);
+      toast("Address copied.");
+    } catch {
+      toast("Copy failed — select the address manually.");
+    }
+  });
+  const discon = document.getElementById("wallet-disconnect");
+  if (discon !== null) discon.addEventListener("click", () => {
+    try {
+      localStorage.removeItem(BUYER_KEY);
+    } catch {
+      // Blocked storage: the reload below still drops the session.
+    }
+    try {
+      // The buyer page honors this: no silent ghost mint after disconnect.
+      sessionStorage.setItem("just_disconnected", "true");
+    } catch {
+      // Blocked storage: the reload below still drops the session.
+    }
+    setWalletDisconnected(document.getElementById("connect-wallet"));
+    toast("Wallet disconnected.");
+    location.reload();
+  });
+  if (typeof document.addEventListener === "function") {
+    document.addEventListener("click", (e) => {
+      const dd = document.getElementById("wallet-dropdown");
+      const wrap = e.target?.closest?.(".wallet-wrap") ?? null;
+      if (dd !== null && dd.hidden === false && wrap === null) dd.hidden = true;
+    });
+  }
   paintWalletButton();
 }
