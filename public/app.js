@@ -383,17 +383,18 @@ function renderVerify(result, agents, deals) {
   }
   const trust = $("verify-trust");
   if (trust !== null) {
-    const active = agents.filter((a) => a.status === "ACTIVE");
-    trust.innerHTML = active.length === 0
-      ? `<li class="sub">No active agents.</li>`
-      : active.map((a) => {
+    const withHistory = agents.filter((a) => {
+      if (a.status !== "ACTIVE") return false;
+      return deals.some((d) => (d.buyer === a.id || d.seller === a.id) && (d.state === "SETTLED" || d.state === "REJECTED"));
+    });
+    trust.innerHTML = withHistory.length === 0
+      ? `<li class="sub">No agent history yet.</li>`
+      : withHistory.map((a) => {
         const terminal = deals.filter((d) => (d.buyer === a.id || d.seller === a.id) && (d.state === "SETTLED" || d.state === "REJECTED"));
         const settled = terminal.filter((d) => d.state === "SETTLED").length;
-        const score = terminal.length === 0 ? null : Math.round((100 * settled) / terminal.length);
+        const score = Math.round((100 * settled) / terminal.length);
         return `<li data-agent-id="${esc(a.id)}"><code>${esc(a.id)}</code> ` +
-          (score === null
-            ? `<span class="s-running">new</span> <span class="sub">no history</span>`
-            : `<span class="${score >= 80 ? "s-done" : score >= 50 ? "s-running" : "s-rejected"}">${score}%</span> <span class="sub">${settled}/${terminal.length} settled</span>`) +
+          `<span class="${score >= 80 ? "s-done" : score >= 50 ? "s-running" : "s-rejected"}">${score}%</span> <span class="sub">${settled}/${terminal.length} settled</span>` +
           `</li>`;
       }).join("");
   }
@@ -631,10 +632,16 @@ function refreshTable(name) {
   const state = tables[name];
   if (state === undefined) return;
   const rows = visibleRows(name);
+  const wrap = state.tbody.closest(".table-wrap");
+  const table = document.querySelector(`table[data-table="${name}"]`);
   if (rows.length === 0) {
-    state.tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:40px; color:#64748B;">No data to display.</td></tr>`;
+    state.tbody.innerHTML = "";
+    if (wrap !== null) wrap.hidden = true;
+    else if (table !== null) table.hidden = true;
     if (state.moreBtn !== null) state.moreBtn.hidden = true;
   } else {
+    if (wrap !== null) wrap.hidden = false;
+    else if (table !== null) table.hidden = false;
     const slice = rows.slice(0, state.shown);
     if (name === "agents" || name === "reviews" || name === "buyers") {
       renderAgentTable(state.tbody, slice, name === "reviews");

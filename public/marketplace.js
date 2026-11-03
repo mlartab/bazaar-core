@@ -216,6 +216,27 @@ function modalFail(title, err) {
   setModal("", 0, title, `<p>${esc(err.message ?? String(err))}</p>`, []);
 }
 
+function promptTxHash() {
+  return new Promise((resolve) => {
+    const modal = document.getElementById("tx-modal");
+    const input = document.getElementById("tx-input");
+    if (modal === null || input === null) {
+      resolve(null);
+      return;
+    }
+    const done = (value) => {
+      modal.hidden = true;
+      resolve(value);
+    };
+    document.getElementById("tx-cancel")?.addEventListener("click", () => done(null), { once: true });
+    document.getElementById("tx-cancel-x")?.addEventListener("click", () => done(null), { once: true });
+    document.getElementById("tx-confirm")?.addEventListener("click", () => done(input.value), { once: true });
+    input.value = "";
+    modal.hidden = false;
+    input.focus();
+  });
+}
+
 const apiPost = globalThis.apiPost ?? (async () => { throw new Error("apiPost unavailable"); });
 
 const BUYER_KEY = "bazaar-buyer-identity";
@@ -616,7 +637,7 @@ async function payDeal(id) {
   // Real settlement: the buyer funds the escrow wallet on-chain first,
   // then hands the verified funding tx to the protocol. The server checks
   // the Transfer event (amount, sender, escrow) before locking escrow.
-  const txHash = prompt("Paste the Base Sepolia USDC funding tx hash (0x…) for this deal:");
+  const txHash = await promptTxHash();
   if (txHash === null) return;
   if (!txHash.trim().startsWith("0x")) {
     toast("That does not look like a tx hash — expected a 0x-prefixed hash.");

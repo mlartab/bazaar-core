@@ -216,13 +216,34 @@ function renderDelivery(envelope) {
   panel.style.display = "";
 }
 
+function promptTxHash() {
+  return new Promise((resolve) => {
+    const modal = document.getElementById("tx-modal");
+    const input = document.getElementById("tx-input");
+    if (modal === null || input === null) {
+      resolve(null);
+      return;
+    }
+    const done = (value) => {
+      modal.hidden = true;
+      resolve(value);
+    };
+    document.getElementById("tx-cancel")?.addEventListener("click", () => done(null), { once: true });
+    document.getElementById("tx-cancel-x")?.addEventListener("click", () => done(null), { once: true });
+    document.getElementById("tx-confirm")?.addEventListener("click", () => done(input.value), { once: true });
+    input.value = "";
+    modal.hidden = false;
+    input.focus();
+  });
+}
+
 async function payDeal(id) {
   const buyer = buyerIdentity();
   if (buyer === null) {
     toast("No buyer identity. Hire again to re-provision.");
     return;
   }
-  const txHash = prompt("Paste the Base Sepolia USDC funding tx hash (0x…) for this deal:");
+  const txHash = await promptTxHash();
   if (txHash === null) return;
   if (!txHash.trim().startsWith("0x")) {
     toast("That does not look like a tx hash — expected a 0x-prefixed hash.");

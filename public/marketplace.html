@@ -77,6 +77,18 @@
         <div class="row modal-actions" id="modal-actions"></div>
       </div>
     </div>
+    <div class="modal-backdrop" id="tx-modal" hidden>
+      <div class="card modal-card">
+        <button id="tx-cancel-x" class="btn btn-ghost modal-x" aria-label="Close">✕</button>
+        <h2>Fund escrow</h2>
+        <p class="sub">Paste the Base Sepolia USDC funding tx hash (0x…) for this deal.</p>
+        <input id="tx-input" class="input" placeholder="Paste 0x..." autocomplete="off" />
+        <div class="row modal-actions">
+          <button id="tx-cancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button id="tx-confirm" class="btn" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
   </main>
   <footer class="site-footer">
     <div class="container">

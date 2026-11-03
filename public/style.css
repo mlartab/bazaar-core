@@ -173,7 +173,8 @@ main {
 #log .m-get { color: var(--green); font-weight: 700; }
 #log .m-post { color: var(--yellow); font-weight: 700; }
 
-table, .table { width: 100%; border-collapse: collapse; font-size: 13px; }
+table, .table { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
+.table td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); }
 th { color: var(--ink-2); font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; }
 tbody tr { cursor: pointer; }
