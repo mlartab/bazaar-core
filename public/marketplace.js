@@ -104,7 +104,7 @@ function hire(id, price) {
   hireSeller = { id, budget: Number.isInteger(price) ? price : "", schema: agent?.input_schema ?? null };
   const fields = schemaEntries(hireSeller.schema);
   setModal(
-    `Step 1 of 2 — the brief, shaped by the seller's schema`,
+    `Step 1 of 2 · 1. Brief — shaped by the seller's schema`,
     1,
     `Hire ${esc(hireSeller.id)}`,
     fields.map(schemaFieldHTML).join("") +
@@ -185,8 +185,18 @@ async function submitHire() {
 
 function setModal(stepText, stepNum, title, bodyHTML, actions) {
   $("hire-step").textContent = stepText;
+  const track = document.querySelector(".hire-progress");
+  if (track !== null && track.querySelector(".hire-steps") === null) {
+    const labels = document.createElement("div");
+    labels.className = "hire-steps";
+    labels.innerHTML = `<span data-step="1">1. Brief</span><span data-step="2">2. Escrow</span>`;
+    track.appendChild(labels);
+  }
   const bar = document.querySelector(".hire-progress i");
   if (bar !== null) bar.style.width = stepNum === 1 ? "50%" : stepNum >= 2 ? "100%" : "0%";
+  for (const label of document.querySelectorAll(".hire-steps [data-step]")) {
+    label.classList.toggle("on", Number(label.dataset.step) <= stepNum);
+  }
   $("modal-title").textContent = title;
   $("modal-body").innerHTML = bodyHTML;
   const bar2 = $("modal-actions");
@@ -290,17 +300,21 @@ function filteredAgents() {
   return rows;
 }
 
+function schemaSummary(a) {
+  const needs = schemaEntries(a?.input_schema).map((e) => e.name).filter((n) => typeof n === "string" && n !== "").slice(0, 3);
+  return needs.length === 0 ? "" : `<div class="schema-needs sub" title="Fields the hire brief requires">Needs: ${needs.map(esc).join(", ")}</div>`;
+}
+
 function cardHTML(a) {
   const desc = typeof a.description === "string" && a.description.trim() !== "" ? a.description : null;
-  return `<div class="card agent-card" data-agent-id="${esc(a.id)}" data-role="${esc(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-category="${esc(a.category ?? "")}" data-title="${esc(a.title ?? a.id)}">` +
+  return `<div class="card agent-card" role="button" tabindex="0" data-agent-id="${esc(a.id)}" data-role="${esc(a.role ?? "")}" data-price="${Number.isInteger(a.price) ? a.price : ""}" data-category="${esc(a.category ?? "")}" data-title="${esc(a.title ?? a.id)}" title="Hire ${esc(a.title ?? a.id)}">` +
     `<div class="badge-row"><span class="chip" data-category="${esc(a.category ?? "")}">${esc(categoryLabel(a.category))}</span>${serviceBadge(a)}</div>` +
     `<h2 class="agent-title" title="${esc(a.title ?? a.id)}">${esc(a.title ?? a.id)}</h2>` +
-    `<div class="agent-id">${esc(a.id)}</div>` +
-    `${walletLine(a)}` +
     (desc === null ? "" : `<p class="agent-desc" title="${esc(desc)}">${esc(desc)}</p>`) +
     `${skillsRow(a)}` +
+    `${schemaSummary(a)}` +
     `<hr class="card-div" />` +
-    `<div class="agent-foot">${priceTag(a.price)}<button class="btn hire-btn" data-id="${esc(a.id)}" data-price="${Number.isInteger(a.price) ? a.price : ""}">Hire Agent</button></div>` +
+    `<div class="agent-foot">${priceTag(a.price)}<button class="btn hire-btn" data-id="${esc(a.id)}" data-price="${Number.isInteger(a.price) ? a.price : ""}">Hire →</button></div>` +
     `</div>`;
 }
 
@@ -398,9 +412,26 @@ function render() {
   }
   grid.innerHTML = `<div class="agent-grid">${rows.map(cardHTML).join("")}</div>`;
   for (const btn of grid.querySelectorAll(".hire-btn")) {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
       const price = btn.dataset.price === "" ? null : Number(btn.dataset.price);
       hire(btn.dataset.id, price);
+    });
+  }
+  for (const card of grid.querySelectorAll(".agent-card[data-agent-id]")) {
+    const open = () => {
+      const price = card.dataset.price === "" ? null : Number(card.dataset.price);
+      hire(card.dataset.agentId, price);
+    };
+    card.addEventListener("click", (e) => {
+      if (e.target.closest("button,a")) return;
+      open();
+    });
+    card.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target.closest("button,a")) return;
+      e.preventDefault();
+      open();
     });
   }
   // Verified Owner badges resolve lazily per card: one profile read each,

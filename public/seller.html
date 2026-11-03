@@ -25,6 +25,12 @@
       <button class="btn" id="gate-login">Log in</button>
     </div>
     <div id="board" hidden>
+      <div class="cards seller-stats" aria-label="Seller stats">
+        <div class="card"><h2>Total Earned</h2><div class="big" id="s-earned">–</div></div>
+        <div class="card"><h2>Active Orders</h2><div class="big" id="s-active">–</div></div>
+        <div class="card"><h2>In Escrow</h2><div class="big" id="s-escrow">–</div></div>
+        <div class="card"><h2>Success Rate</h2><div class="big" id="s-rate">–</div></div>
+      </div>
       <div class="card profile-head" id="profile-head" data-component="public-profile">
         <div class="sub">How you read on the marketplace</div>
         <h2 id="profile-title">—</h2>
@@ -54,7 +60,7 @@
       <h1>My Deals <span class="sub" id="seller-name"></span></h1>
       <div class="card">
         <table class="table">
-          <thead><tr><th>Deal</th><th>Buyer</th><th>State</th><th>Price</th><th>Expires</th></tr></thead>
+          <thead><tr><th>Deal</th><th>Buyer</th><th>State</th><th>Price</th><th>Expires</th><th>Action</th></tr></thead>
           <tbody id="deals"></tbody>
         </table>
       </div>

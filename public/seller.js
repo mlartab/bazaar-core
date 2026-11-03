@@ -255,17 +255,36 @@ async function load() {
     const cls = { NEGOTIATING: "negotiating", AGREED: "agreed", ESCROW_LOCKED: "escrow", EXECUTING: "executing", DELIVERED: "delivered", VERIFYING: "verifying", SETTLED: "settled", REJECTED: "rejected" }[state] ?? "active";
     return `<span class="pill ${cls}" data-state="${esc(state)}">${esc(state)}</span>`;
   };
+  const earned = mine.filter((d) => d.state === "SETTLED").reduce((sum, d) => sum + (Number.isInteger(d.price) ? d.price : 0), 0);
+  const activeOrders = mine.filter((d) => d.state !== "SETTLED" && d.state !== "REJECTED");
+  const lockedSum = mine
+    .filter((d) => d.state === "ESCROW_LOCKED" || d.state === "EXECUTING" || d.state === "DELIVERED" || d.state === "VERIFYING")
+    .reduce((sum, d) => sum + (Number.isInteger(d.price) ? d.price : 0), 0);
+  const terminal = mine.filter((d) => d.state === "SETTLED" || d.state === "REJECTED").length;
+  const settledCount = mine.filter((d) => d.state === "SETTLED").length;
+  $("s-earned").textContent = `${earned} CR`;
+  $("s-active").textContent = String(activeOrders.length);
+  $("s-escrow").textContent = `${lockedSum} CR`;
+  $("s-rate").textContent = terminal === 0 ? "–" : `${Math.round((settledCount / terminal) * 100)}%`;
+  const rowAction = (d) => {
+    if (d.state === "NEGOTIATING") return `<button class="btn" data-seller-accept="${esc(d.id)}">Accept</button>`;
+    if (d.state === "ESCROW_LOCKED") return `<button class="btn" data-seller-deliver="${esc(d.id)}">Deliver</button>`;
+    return `<button class="btn btn-ghost" data-seller-view="${esc(d.id)}">View</button>`;
+  };
   $("deals").innerHTML = mine
     .map(
       (d) =>
-        `<tr data-id="${esc(d.id)}" data-deal-id="${esc(d.id)}" data-state="${esc(d.state)}" data-price="${d.price ?? ""}" data-buyer="${esc(d.buyer ?? "")}"><td data-deal-id="${esc(d.id)}">${esc(d.id)}</td><td>${esc(d.buyer ?? "")}</td><td>${pill(d.state)}</td><td data-price="${d.price ?? ""}">${d.price ?? ""}</td><td>${expiresIn(d)}</td></tr>`,
+        `<tr data-id="${esc(d.id)}" data-deal-id="${esc(d.id)}" data-state="${esc(d.state)}" data-price="${d.price ?? ""}" data-buyer="${esc(d.buyer ?? "")}"><td data-deal-id="${esc(d.id)}">${esc(d.id)}</td><td>${esc(d.buyer ?? "")}</td><td>${pill(d.state)}</td><td data-price="${d.price ?? ""}">${d.price ?? ""}</td><td>${expiresIn(d)}</td><td>${rowAction(d)}</td></tr>`,
     )
     .join("");
   if (mine.length === 0) {
-    $("deals").innerHTML = `<tr><td colspan="5">No deals yet. Approved listings appear in the marketplace.</td></tr>`;
+    $("deals").innerHTML = `<tr><td colspan="6">No deals yet. Approved listings appear in the marketplace.</td></tr>`;
   }
   for (const row of document.querySelectorAll("#deals tr[data-id]")) {
-    row.addEventListener("click", () => showDeal(row.dataset.id));
+    row.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      showDeal(row.dataset.id);
+    });
   }
   if (selected !== null) showDeal(selected).catch(() => {});
 }
@@ -288,6 +307,37 @@ async function showDeal(id) {
     $("deal-actions").innerHTML = "";
   }
 }
+
+async function deliverDeal(id, price) {
+  try {
+    // Async inspection: 202 parks the deal in VERIFYING and the AI
+    // Inspector settles it in the background. The deliverable reference
+    // is opaque — the server never fetches it in this slice.
+    const deliveryId = `del-${Date.now()}`;
+    await api(`/api/deals/${encodeURIComponent(id)}/delivery`, {
+      method: "POST",
+      body: { id: deliveryId, dealId: id, deliveryUrl: `deliverable:${deliveryId}` },
+    });
+    $("detail").textContent = `Delivered ${deliveryId}. Awaiting inspector — escrow ${price} CR still locked. The deal settles automatically on a valid verdict.`;
+    await load();
+  } catch (err) {
+    $("detail").textContent = `Delivery failed: ${err.message}`;
+  }
+}
+
+const sellerDealsBody = $("deals");
+if (sellerDealsBody !== null) sellerDealsBody.addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-seller-accept],[data-seller-deliver],[data-seller-view]");
+  if (btn === null) return;
+  if (btn.hasAttribute("data-seller-deliver")) {
+    const row = btn.closest("tr[data-price]");
+    deliverDeal(btn.dataset.sellerDeliver, row !== null ? Number(row.dataset.price) : null).catch(() => {});
+  } else {
+    showDeal(btn.dataset.sellerAccept ?? btn.dataset.sellerView).catch(() => {});
+    const actions = $("deal-actions");
+    if (actions !== null) actions.scrollIntoView({ block: "nearest" });
+  }
+});
 
 function renderActions(deal, moves) {
   const bar = $("deal-actions");
@@ -334,20 +384,7 @@ function renderActions(deal, moves) {
     const btn = document.createElement("button");
     btn.textContent = "Deliver Work";
     btn.addEventListener("click", async () => {
-      try {
-        // Async inspection: 202 parks the deal in VERIFYING and the AI
-        // Inspector settles it in the background. The deliverable reference
-        // is opaque — the server never fetches it in this slice.
-        const deliveryId = `del-${Date.now()}`;
-        await api(`/api/deals/${encodeURIComponent(deal.id)}/delivery`, {
-          method: "POST",
-          body: { id: deliveryId, dealId: deal.id, deliveryUrl: `deliverable:${deliveryId}` },
-        });
-        $("detail").textContent = `Delivered ${deliveryId}. Awaiting inspector — escrow ${deal.price} CR still locked. The deal settles automatically on a valid verdict.`;
-        await load();
-      } catch (err) {
-        $("detail").textContent = `Delivery failed: ${err.message}`;
-      }
+      await deliverDeal(deal.id, deal.price);
     });
     bar.append(btn);
   } else if (deal.state === "AGREED") {

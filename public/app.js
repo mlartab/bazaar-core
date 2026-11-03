@@ -631,13 +631,18 @@ function refreshTable(name) {
   const state = tables[name];
   if (state === undefined) return;
   const rows = visibleRows(name);
-  const slice = rows.slice(0, state.shown);
-  if (name === "agents" || name === "reviews") {
-    renderAgentTable(state.tbody, slice, name === "reviews");
+  if (rows.length === 0) {
+    state.tbody.innerHTML = `<tr><td colspan="6" style="text-align:center; padding:40px; color:#64748B;">No data to display.</td></tr>`;
+    if (state.moreBtn !== null) state.moreBtn.hidden = true;
   } else {
-    state.tbody.innerHTML = slice.map(state.rowHTML).join("");
-    for (const row of state.tbody.querySelectorAll("tr")) {
-      row.addEventListener("click", () => state.onRow(row.dataset));
+    const slice = rows.slice(0, state.shown);
+    if (name === "agents" || name === "reviews") {
+      renderAgentTable(state.tbody, slice, name === "reviews");
+    } else {
+      state.tbody.innerHTML = slice.map(state.rowHTML).join("");
+      for (const row of state.tbody.querySelectorAll("tr")) {
+        row.addEventListener("click", () => state.onRow(row.dataset));
+      }
     }
   }
   if (state.emptyEl !== null) {
@@ -679,6 +684,11 @@ async function tick() {
     $("m-agents").textContent = agents.length;
     $("m-pending").textContent = pendingAgents.length;
     $("m-frozen").textContent = frozenDeals.reduce((sum, d) => sum + (Number.isInteger(d.price) ? d.price : 0), 0);
+    $("kpi-volume").textContent = `${stats.tvl} CR`;
+    $("kpi-active").textContent = stats.activeDeals;
+    $("kpi-pending").textContent = pendingAgents.length;
+    const terminalTotal = stats.settled + stats.rejected;
+    $("kpi-success").textContent = terminalTotal === 0 ? "–" : `${Math.round((stats.settled / terminalTotal) * 100)}%`;
     renderAttention(pendingAgents.length, frozenDeals, rejectedDeals);
     renderVerify(dash.result, agents, deals);
     $("net-dot").classList.remove("down");

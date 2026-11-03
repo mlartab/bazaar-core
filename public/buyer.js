@@ -63,40 +63,65 @@ const DEAL_PILL = {
   REJECTED: "rejected",
 };
 
-function dealCardHTML(detail) {
+function briefText(deal) {
+  const prompt = deal?.metadata?.prompt;
+  if (typeof prompt === "string" && prompt.trim() !== "") {
+    const clean = prompt.trim();
+    return clean.length > 60 ? `${clean.slice(0, 60)}…` : clean;
+  }
+  return "—";
+}
+
+function timeAgo(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return "—";
+  const s = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+function dealActionHTML(deal, waitingOn, buyerMoves) {
+  if (waitingOn === "buyer" && buyerMoves.includes("PAY")) {
+    return `<button class="btn" data-pay="${esc(deal.id)}">Pay ${deal.price} CR</button>`;
+  }
+  if (waitingOn === "buyer" && buyerMoves.includes("ACCEPT")) {
+    return `<button class="btn" data-accept="${esc(deal.id)}" data-price="${deal.price}">Accept</button>`;
+  }
+  if (waitingOn === "buyer" && buyerMoves.includes("OFFER")) {
+    return `<button class="btn" data-offer="${esc(deal.id)}">Offer</button>`;
+  }
+  return `<button class="btn btn-ghost" data-view="${esc(deal.id)}">View</button>`;
+}
+
+function dealRowHTML(detail) {
   const deal = detail.deal;
   const waitingOn = detail.waitingOn;
   const buyerMoves = Array.isArray(detail.allowedMoves?.buyer) ? detail.allowedMoves.buyer : [];
-  let turn = "";
-  if (waitingOn === "buyer") {
-    const btns = [];
-    if (buyerMoves.includes("PAY")) btns.push(`<button class="btn" data-pay="${esc(deal.id)}">Pay ${deal.price} CR</button>`);
-    if (buyerMoves.includes("OFFER")) btns.push(`<button class="btn" data-offer="${esc(deal.id)}">Make offer</button>`);
-    if (buyerMoves.includes("ACCEPT")) btns.push(`<button class="btn" data-accept="${esc(deal.id)}" data-price="${deal.price}">Accept ${deal.price} CR</button>`);
-    turn = `<p><span class="pill settled">Your turn</span></p>` +
-      (btns.length > 0 ? `<div class="row">${btns.join("")}</div>` : `<p class="sub">Your move, via the deal endpoints.</p>`);
-  } else {
-    turn = `<p class="sub">Waiting on ${esc(waitingOn ?? "inspector")}.</p>`;
-  }
-  const funding = txLink(detail.pay_tx_hash ?? deal.pay_tx_hash);
-  const payout = txLink(detail.payout_tx_hash ?? deal.payout_tx_hash);
-  const proofs = funding !== "" || payout !== ""
-    ? `<div class="sub">Funding ${funding === "" ? "—" : funding} · Payout ${payout === "" ? "—" : payout}</div>`
-    : "";
-  return `<div class="card deal-card" data-deal-id="${esc(deal.id)}">` +
-    `<div class="badge-row"><span class="pill ${DEAL_PILL[deal.state] ?? "active"}">${esc(deal.state)}</span></div>` +
-    `<div class="agent-id">${esc(deal.id)} → ${esc(deal.seller)}</div>` +
-    `${priceTag(deal.price)}` +
-    `${proofs}` +
-    `${turn}</div>`;
+  const opened = timeAgo(Number(deal.created_at) * 1000);
+  return `<tr data-deal-id="${esc(deal.id)}">` +
+    `<td>${esc(deal.seller)}</td>` +
+    `<td title="${esc(deal?.metadata?.prompt ?? "")}">${esc(briefText(deal))}</td>` +
+    `<td>${priceTag(deal.price)}</td>` +
+    `<td><span class="pill ${DEAL_PILL[deal.state] ?? "active"}" data-state="${esc(deal.state)}">${esc(deal.state)}</span></td>` +
+    `<td class="sub" title="Opened ${esc(opened)}">${esc(opened)}</td>` +
+    `<td>${dealActionHTML(deal, waitingOn, buyerMoves)}</td></tr>`;
+}
+
+function dealsTableHTML(rows) {
+  return `<div class="table-wrap"><table class="table"><thead><tr><th>Agent</th><th>Brief</th><th>Price</th><th>Status</th><th>Updated</th><th>Action</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
 }
 
 function dealsEmptyHTML() {
-  return `<div class="deals-empty"><svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="6" y="14" width="32" height="20" rx="4" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5 4"/><path d="M6 20h32" stroke="#94A3B8" stroke-width="2"/><circle cx="22" cy="29" r="3" stroke="#EA580C" stroke-width="2"/></svg><p>No deals yet. Browse the marketplace to hire a seller.</p><p><a href="/marketplace">Browse agents →</a></p></div>`;
+  return `<div class="deals-empty"><svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="6" y="14" width="32" height="20" rx="4" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5 4"/><path d="M6 20h32" stroke="#94A3B8" stroke-width="2"/><circle cx="22" cy="29" r="3" stroke="#EA580C" stroke-width="2"/></svg><p>No active orders. Go to the Marketplace to hire an agent.</p><p><a href="/marketplace"><button class="btn" type="button">Browse agents →</button></a></p></div>`;
 }
 
 function dealsSignedOutHTML() {
   return `<div class="deals-empty"><svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="6" y="14" width="32" height="20" rx="4" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5 4"/><path d="M6 20h32" stroke="#94A3B8" stroke-width="2"/><circle cx="22" cy="29" r="3" stroke="#EA580C" stroke-width="2"/></svg><p>You are signed out. Connect your wallet to view your deals.</p></div>`;
+}
+
+function dealsErrorHTML(message) {
+  return `<div class="deals-empty"><p>Could not load your deals: ${esc(message)}</p><p><button class="btn" type="button" data-retry-deals>Retry</button></p></div>`;
 }
 
 async function loadMyDeals() {
@@ -120,23 +145,40 @@ async function loadMyDeals() {
     const data = await apiGet("/api/deals?limit=100", buyer.key);
     deals = (data.result.deals ?? []).filter((d) => DEAL_STATES.has(d.state));
   } catch (err) {
-    body.innerHTML = `<p class="sub">Could not load your deals: ${esc(err.message ?? String(err))}</p>`;
+    body.innerHTML = dealsErrorHTML(err.message ?? String(err));
     return;
   }
   if (deals.length === 0) {
     body.innerHTML = dealsEmptyHTML();
     return;
   }
-  const cards = [];
+  const rows = [];
   for (const d of deals) {
     try {
       const detail = await apiGet(`/api/deals/${encodeURIComponent(d.id)}`, buyer.key);
-      cards.push(dealCardHTML({ deal: detail.result.deal, waitingOn: detail.waitingOn, allowedMoves: detail.allowedMoves, pay_tx_hash: detail.result.pay_tx_hash ?? null, payout_tx_hash: detail.result.payout_tx_hash ?? null }));
+      rows.push(dealRowHTML({ deal: { ...detail.result.deal, created_at: d.created_at ?? detail.result.deal.created_at }, waitingOn: detail.waitingOn, allowedMoves: detail.allowedMoves }));
     } catch {
-      cards.push(`<div class="card deal-card"><div class="agent-id">${esc(d.id)}</div><p class="sub">Could not load turn status.</p></div>`);
+      rows.push(`<tr><td>${esc(d.seller ?? "")}</td><td>${esc(briefText(d))}</td><td>${priceTag(d.price)}</td><td><span class="pill ${DEAL_PILL[d.state] ?? "active"}">${esc(d.state)}</span></td><td class="sub">—</td><td><span class="sub">—</span></td></tr>`);
     }
   }
-  body.innerHTML = `<div class="agent-grid">${cards.join("")}</div>`;
+  body.innerHTML = dealsTableHTML(rows);
+}
+
+async function viewDeal(id) {
+  const buyer = buyerIdentity();
+  if (buyer === null) {
+    toast("No buyer identity. Hire again to re-provision.");
+    return;
+  }
+  try {
+    const detail = await apiGet(`/api/deals/${encodeURIComponent(id)}`, buyer.key);
+    const deal = detail.result.deal;
+    const funding = txLink(detail.result.pay_tx_hash ?? null);
+    const payout = txLink(detail.result.payout_tx_hash ?? null);
+    toast(`Deal ${deal.id}: ${deal.state} — waiting on ${detail.waitingOn ?? "inspector"}.${funding !== "" || payout !== "" ? " Receipts on file." : ""}`);
+  } catch (err) {
+    toast(err.message ?? String(err));
+  }
 }
 
 async function payDeal(id) {
@@ -199,11 +241,16 @@ async function acceptDeal(id, price) {
 
 const buyerDealsBody = $("my-deals-body");
 if (buyerDealsBody !== null) buyerDealsBody.addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-pay],[data-offer],[data-accept]");
+  if (e.target.closest("[data-retry-deals]") !== null) {
+    loadMyDeals().catch(() => {});
+    return;
+  }
+  const btn = e.target.closest("[data-pay],[data-offer],[data-accept],[data-view]");
   if (btn === null) return;
   if (btn.hasAttribute("data-pay")) payDeal(btn.dataset.pay);
   else if (btn.hasAttribute("data-offer")) offerDeal(btn.dataset.offer);
   else if (btn.hasAttribute("data-accept")) acceptDeal(btn.dataset.accept, Number(btn.dataset.price));
+  else if (btn.hasAttribute("data-view")) viewDeal(btn.dataset.view);
 });
 
 const buyerDealsToggle = $("my-deals-toggle");
