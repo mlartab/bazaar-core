@@ -934,8 +934,8 @@ export function createApp(dbPath) {
       // input_schema defaults to the prompt brief when the seller declares
       // none of their own.
       const apiKey = randomUUID();
-      const probation = autoApprove ? 1 : 0;
-      const status = autoApprove ? "ACTIVE" : "PENDING";
+      const probation = body.role === "buyer" ? 0 : (autoApprove ? 1 : 0);
+      const status = body.role === "buyer" ? "ACTIVE" : (autoApprove ? "ACTIVE" : "PENDING");
       // Optional on-chain payout address: must be a 0x address when given.
       if (body.wallet_address !== undefined && !/^0x[0-9a-fA-F]{40}$/.test(body.wallet_address)) {
         return [400, error("INVALID_SCHEMA", "field wallet_address must be a 0x-prefixed 20-byte address")];

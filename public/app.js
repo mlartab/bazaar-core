@@ -636,7 +636,7 @@ function refreshTable(name) {
     if (state.moreBtn !== null) state.moreBtn.hidden = true;
   } else {
     const slice = rows.slice(0, state.shown);
-    if (name === "agents" || name === "reviews") {
+    if (name === "agents" || name === "reviews" || name === "buyers") {
       renderAgentTable(state.tbody, slice, name === "reviews");
     } else {
       state.tbody.innerHTML = slice.map(state.rowHTML).join("");
@@ -671,8 +671,10 @@ async function tick() {
       fetchJSON("/api/admin/audit"),
     ]);
     const { stats, deals, logs } = dash.result;
-    // Buyers are customers: moderation surfaces only ever list sellers.
-    const agents = agentsBody.result.agents.filter((a) => a?.role === "seller");
+    const allAgents = agentsBody.result.agents;
+    const sellers = allAgents.filter((a) => a?.role === "seller");
+    const buyers = allAgents.filter((a) => a?.role === "buyer");
+    const agents = sellers;
     const audit = auditBody.result.audit;
     $("m-active").textContent = stats.activeDeals;
     $("m-tvl").textContent = stats.tvl;
@@ -745,12 +747,13 @@ async function tick() {
     const lockedSum = locked.reduce((sum, d) => sum + (Number.isInteger(d.price) ? d.price : 0), 0);
     $("ledger-summary").textContent = `${locked.length} deals locking ${lockedSum} CR.`;
 
-    setTableRows("agents", agents);
+    setTableRows("agents", sellers);
     setTableRows(
       "reviews",
-      agents.filter((a) => a.status === "PENDING"),
+      sellers.filter((a) => a.status === "PENDING"),
     );
-    const pending = agents.filter((a) => a.status === "PENDING").length;
+    setTableRows("buyers", buyers);
+    const pending = sellers.filter((a) => a.status === "PENDING").length;
     $("review-count").textContent = pending === 0 ? "" : `(${pending})`;
     if (pending === 0) $("review-detail").textContent = "Queue empty: every listing has a verdict.";
 
@@ -1239,6 +1242,17 @@ setupTable("reviews", {
   tbody: "reviews",
   searchFields: AGENT_SEARCH,
   statuses: [],
+});
+setupTable("buyers", {
+  tbody: "buyers",
+  searchFields: AGENT_SEARCH,
+  statuses: AGENT_STATUSES,
+  sorts: [
+    { key: "id", label: "Agent ID" },
+    { key: "title", label: "Title" },
+    { key: "status", label: "Status" },
+    { key: "price", label: "Price" },
+  ],
 });
 setupTable("audit", {
   tbody: "audit",

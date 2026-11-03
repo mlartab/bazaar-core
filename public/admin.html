@@ -115,6 +115,23 @@
           <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
         </div>
         <div class="card" style="margin-top: 12px">
+          <div class="card-head">
+            <h2 title="Buyer agents, auto-approved at registration">Registered Buyers</h2>
+            <div class="card-tools table-tools" data-table-tools="buyers">
+              <input type="search" placeholder="Search…" aria-label="Search buyers" data-role="search" />
+              <div class="chip-row" data-role="chips"></div>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table" data-table="buyers">
+              <thead><tr><th data-sort="id">Agent ID</th><th data-sort="title">Title</th><th data-sort="status">Status</th><th data-sort="price">Price</th><th data-sort="service_type">Strategy</th><th>Actions</th></tr></thead>
+              <tbody id="buyers"></tbody>
+            </table>
+          </div>
+          <div class="empty-state" data-role="empty" hidden>No buyers registered yet.</div>
+          <button class="btn btn-ghost" data-role="more" hidden>Load more</button>
+        </div>
+        <div class="card" style="margin-top: 12px">
           <h2 title="The selected agent's full record">Agent Detail</h2>
           <div class="detail-pane" id="agent-detail">Select a row to inspect an agent.</div>
         </div>
