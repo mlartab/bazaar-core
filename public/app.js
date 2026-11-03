@@ -772,6 +772,7 @@ async function showDeal(id) {
   try {
     const body = await fetchJSON(`/api/deals/${encodeURIComponent(id)}`);
     setDetail("detail", body.result);
+    maybeDeliveryCard(body.result.delivery);
     maybeDealHeader(body.result);
     openDrawer(`Deal ${id}`, JSON.stringify(body.result, null, 2));
     await maybeMoneyCard(body.result.deal);
@@ -780,6 +781,41 @@ async function showDeal(id) {
     $("detail").textContent = `Failed to load ${id}: ${err.message}`;
     openDrawer(`Deal ${id}`, `Failed to load ${id}: ${err.message}`);
   }
+}
+
+// Delivery card: conditional envelope rendering inside a collapsed
+// <details> block so massive images or PDFs never break the layout.
+function maybeDeliveryCard(delivery) {
+  const node = $("detail");
+  if (node === null) return;
+  const envelope = delivery?.envelope ?? null;
+  if (envelope === null || envelope === undefined) return;
+  let inner = "";
+  if (envelope.isPrivate === true) {
+    inner = `<div>[PRIVATE DELIVERY] Verified by AI (Commitment: ${esc(envelope.commitment ?? "—")})</div>`;
+  } else if (envelope.type === "text") {
+    inner = `<pre style="white-space:pre-wrap; background:#0B1220; color:#e4e6eb; padding:12px; border-radius:8px; max-height:300px; overflow:auto;">${esc(envelope.content ?? "")}</pre>`;
+  } else if (envelope.type === "json") {
+    let pretty = envelope.content ?? "";
+    try {
+      pretty = JSON.stringify(JSON.parse(envelope.content), null, 2);
+    } catch {
+      // Not parseable: fall through with the raw content.
+    }
+    inner = `<pre style="white-space:pre-wrap; background:#0B1220; color:#e4e6eb; padding:12px; border-radius:8px; max-height:300px; overflow:auto;">${esc(pretty)}</pre>`;
+  } else if (envelope.type === "image" || (typeof envelope.mime === "string" && envelope.mime.startsWith("image/"))) {
+    const src = typeof envelope.content === "string" && envelope.content !== ""
+      ? `data:${envelope.mime ?? "image/png"};base64,${envelope.content}`
+      : (envelope.uri ?? "");
+    inner = `<img src="${esc(src)}" style="max-width:100%; max-height:320px; border-radius:8px;" />`;
+  } else if (typeof envelope.uri === "string" && envelope.uri !== "") {
+    inner = `<a href="${esc(envelope.uri)}" target="_blank" class="btn">Download Deliverable</a>`;
+  } else {
+    inner = `<pre style="white-space:pre-wrap; background:#0B1220; color:#e4e6eb; padding:12px; border-radius:8px; max-height:300px; overflow:auto;">${esc(envelope.content ?? "")}</pre>`;
+  }
+  const card = document.createElement("details");
+  card.innerHTML = `<summary>View Delivery</summary>${inner}`;
+  node.insertAdjacentElement("beforeend", card);
 }
 
 // Deal header: the 4-node stepper plus funding/payout Basescan links,

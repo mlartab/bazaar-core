@@ -105,8 +105,10 @@ before(async () => {
   assert.equal(s2, 200);
   assertOk(b2);
   sellerKey = b2.result.api_key;
-  // Commerce requires ACTIVE counterparties.
-  await approve("buyer");
+  // Buyers auto-approve at registration; sellers still need approval.
+  const [buyerStatus, buyerReview] = await get("/api/agents/buyer/status", undefined);
+  assert.equal(buyerStatus, 200);
+  assert.equal(buyerReview.result.status, "ACTIVE");
   await approve("seller");
 });
 
@@ -481,6 +483,16 @@ test("protocol: mcp tools endpoint lists the tool schemas", async () => {
   assert.deepEqual(byName.bazaar_deliver_work.inputSchema.properties, {
     deal_id: { type: "string" },
     delivery_url: { type: "string" },
+    envelope: {
+      type: "object",
+      properties: {
+        type: { type: "string" },
+        content: { type: "string" },
+        uri: { type: "string" },
+        mime: { type: "string" },
+      },
+    },
+    is_private: { type: "boolean" },
   });
   assert.deepEqual(byName.bazaar_get_deal.inputSchema.properties, {
     deal_id: { type: "string" },

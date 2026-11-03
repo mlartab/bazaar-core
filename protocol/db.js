@@ -161,7 +161,7 @@ export function openStore(path) {
     // pre-envelope rows, which read as legacy URL-only deliveries.
     // envelope_type/content_hash/commitment track what was verified;
     // is_private (0/1) marks commitment-bound private payloads.
-    for (const column of ["envelope_type TEXT", "content TEXT", "uri TEXT", "content_hash TEXT", "commitment_hash TEXT", "is_private INTEGER DEFAULT 0"]) {
+    for (const column of ["envelope_type TEXT", "content TEXT", "uri TEXT", "content_hash TEXT", "commitment_hash TEXT", "is_private INTEGER DEFAULT 0", "mime TEXT"]) {
       try {
         db.exec(`ALTER TABLE deliveries ADD COLUMN ${column}`);
       } catch {
@@ -792,7 +792,7 @@ export function openStore(path) {
         return fail("BAD_ID", "delivery must have a non-empty string deal_id");
       }
       try {
-        run("INSERT INTO deliveries (id, deal_id, status, delivery_url, envelope_type, content, uri, content_hash, commitment_hash, is_private) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+        run("INSERT INTO deliveries (id, deal_id, status, delivery_url, envelope_type, content, uri, content_hash, commitment_hash, is_private, mime) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
           delivery.id,
           delivery.deal_id,
           delivery.status ?? null,
@@ -805,6 +805,7 @@ export function openStore(path) {
           delivery.content_hash ?? null,
           delivery.commitment_hash ?? null,
           delivery.is_private === 1 ? 1 : 0,
+          delivery.mime ?? null,
         ]);
       } catch (err) {
         // Same UNIQUE mapping as saveMove: a repeated delivery id is a
@@ -830,7 +831,7 @@ export function openStore(path) {
     // readers keep their exact rows; envelope-aware paths read here.
     getDeliveryEnvelope(dealId) {
       if (!isValidId(dealId)) return null;
-      const row = get("SELECT envelope_type, content, uri, content_hash, commitment_hash, is_private FROM deliveries WHERE deal_id = ? ORDER BY rowid DESC LIMIT 1", [dealId]);
+      const row = get("SELECT envelope_type, content, uri, content_hash, commitment_hash, is_private, mime FROM deliveries WHERE deal_id = ? ORDER BY rowid DESC LIMIT 1", [dealId]);
       if (row === undefined || row === null || row.envelope_type === null) return null;
       return {
         type: row.envelope_type,
@@ -841,6 +842,7 @@ export function openStore(path) {
         hash: row.content_hash ?? null,
         commitment: row.commitment_hash ?? null,
         isPrivate: row.is_private === 1,
+        mime: row.mime ?? null,
       };
     },
   };

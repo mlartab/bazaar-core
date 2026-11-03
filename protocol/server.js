@@ -268,12 +268,22 @@ export const MCP_TOOLS = [
   },
   {
     name: "bazaar_deliver_work",
-    description: "Submit a deliverable for a paid deal, starting inspection.",
+    description: "Submit a deliverable for a paid deal, starting inspection. Use envelope for universal deliveries: text block ({type:'text', content}), structured data ({type:'json', content}), image or file URL ({type:'image', uri}), private payload (is_private:true).",
     inputSchema: {
       type: "object",
       properties: {
         deal_id: { type: "string" },
         delivery_url: { type: "string" },
+        envelope: {
+          type: "object",
+          properties: {
+            type: { type: "string" },
+            content: { type: "string" },
+            uri: { type: "string" },
+            mime: { type: "string" },
+          },
+        },
+        is_private: { type: "boolean" },
       },
       required: ["deal_id", "delivery_url"],
     },
@@ -1091,8 +1101,11 @@ export function createApp(dbPath) {
           return [status, wrap(payload)];
         }
         case "bazaar_deliver_work": {
+          const deliveryBody = { id: `del-${randomUUID().slice(0, 8)}`, deliveryUrl: args.delivery_url };
+          if (args.envelope !== undefined && args.envelope !== null) deliveryBody.envelope = args.envelope;
+          if (args.is_private !== undefined) deliveryBody.is_private = args.is_private;
           const [status, payload] = await handlers["POST /api/deals/:id/delivery"](
-            { id: `del-${randomUUID().slice(0, 8)}`, deliveryUrl: args.delivery_url },
+            deliveryBody,
             args.deal_id,
             agent,
           );
@@ -1302,6 +1315,7 @@ export function createApp(dbPath) {
           content_hash: env?.hash ?? null,
           commitment_hash: isPrivate ? (env?.hash ?? null) : null,
           is_private: isPrivate ? 1 : 0,
+          mime: env?.mime ?? null,
         });
         if (!saved.ok) {
           if (saved.code === "DUPLICATE_DELIVERY") return [409, { ...toContractError(saved), state: deal.state, allowedMoves: movesFor(deal.state), ...turnContext(deal, agent) }];
@@ -1382,6 +1396,7 @@ export function createApp(dbPath) {
       const deal = store.getDeal(id);
       if (deal === null) return [404, error("NO_SUCH_DEAL", `no deal with id ${id}`)];
       const row = store.getDealRow(id);
+      const envelope = store.getDeliveryEnvelope(id);
       return [
         200,
         {
@@ -1393,7 +1408,7 @@ export function createApp(dbPath) {
           // lock: agents verify funds without correlating a second endpoint.
           // Chain proofs ride alongside so consoles link out to Basescan
           // without a second round trip; getDeal's frozen shape is untouched.
-          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, row), escrow: ledger.locks[id]?.amount ?? null, pay_tx_hash: row?.pay_tx_hash ?? null, payout_tx_hash: row?.payout_tx_hash ?? null, actions: ACTIONS },
+          result: { deal, moves: store.listMoves(id), verdict: buildVerdict(deal, row), escrow: ledger.locks[id]?.amount ?? null, pay_tx_hash: row?.pay_tx_hash ?? null, payout_tx_hash: row?.payout_tx_hash ?? null, actions: ACTIONS, delivery: envelope === null ? null : { envelope } },
         },
       ];
     },

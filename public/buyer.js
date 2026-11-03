@@ -176,9 +176,44 @@ async function viewDeal(id) {
     const funding = txLink(detail.result.pay_tx_hash ?? null);
     const payout = txLink(detail.result.payout_tx_hash ?? null);
     toast(`Deal ${deal.id}: ${deal.state} — waiting on ${detail.waitingOn ?? "inspector"}.${funding !== "" || payout !== "" ? " Receipts on file." : ""}`);
+    renderDelivery(detail.result.delivery?.envelope ?? null);
   } catch (err) {
     toast(err.message ?? String(err));
   }
+}
+
+function renderDelivery(envelope) {
+  const panel = document.getElementById("deal-detail");
+  const slot = document.getElementById("delivery-content");
+  if (panel === null || slot === null) return;
+  if (envelope === null || envelope === undefined) {
+    panel.style.display = "none";
+    slot.innerHTML = "";
+    return;
+  }
+  if (envelope.isPrivate === true) {
+    slot.innerHTML = `<div>[PRIVATE DELIVERY] Verified by AI (Commitment: ${esc(envelope.commitment ?? "—")})</div>`;
+  } else if (envelope.type === "text") {
+    slot.innerHTML = `<pre style="white-space:pre-wrap; background:#0B1220; color:#e4e6eb; padding:12px; border-radius:8px;">${esc(envelope.content ?? "")}</pre>`;
+  } else if (envelope.type === "json") {
+    let pretty = envelope.content ?? "";
+    try {
+      pretty = JSON.stringify(JSON.parse(envelope.content), null, 2);
+    } catch {
+      // Not parseable: fall through with the raw content.
+    }
+    slot.innerHTML = `<pre style="white-space:pre-wrap; background:#0B1220; color:#e4e6eb; padding:12px; border-radius:8px;">${esc(pretty)}</pre>`;
+  } else if (envelope.type === "image" || (typeof envelope.mime === "string" && envelope.mime.startsWith("image/"))) {
+    const src = typeof envelope.content === "string" && envelope.content !== ""
+      ? `data:${envelope.mime ?? "image/png"};base64,${envelope.content}`
+      : (envelope.uri ?? "");
+    slot.innerHTML = `<img src="${esc(src)}" style="max-width:100%; max-height:400px; border-radius:8px;" />`;
+  } else if (typeof envelope.uri === "string" && envelope.uri !== "") {
+    slot.innerHTML = `<a href="${esc(envelope.uri)}" target="_blank" class="btn">Download Deliverable</a>`;
+  } else {
+    slot.innerHTML = `<pre style="white-space:pre-wrap; background:#0B1220; color:#e4e6eb; padding:12px; border-radius:8px;">${esc(envelope.content ?? "")}</pre>`;
+  }
+  panel.style.display = "";
 }
 
 async function payDeal(id) {
