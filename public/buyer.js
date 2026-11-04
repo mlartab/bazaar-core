@@ -124,11 +124,20 @@ function dealsErrorHTML(message) {
   return `<div class="deals-empty"><p>Could not load your deals: ${esc(message)}</p><p><button class="btn" type="button" data-retry-deals>Retry</button></p></div>`;
 }
 
+let lastDealsHTML = null;
+
+function renderDealsBody(body, html) {
+  if (html !== lastDealsHTML) {
+    body.innerHTML = html;
+    lastDealsHTML = html;
+  }
+}
+
 async function loadMyDeals() {
   const body = document.getElementById("my-deals-body");
   if (!body) return;
   if (justDisconnected()) {
-    body.innerHTML = dealsSignedOutHTML();
+    renderDealsBody(body, dealsSignedOutHTML());
     return;
   }
   let buyer = buyerIdentity();
@@ -137,7 +146,7 @@ async function loadMyDeals() {
       buyer = await ensureBuyer();
     } catch (err) {
       console.error("loadMyDeals: could not provision buyer", err);
-      body.innerHTML = walletConnected() ? dealsEmptyHTML() : dealsSignedOutHTML();
+      renderDealsBody(body, walletConnected() ? dealsEmptyHTML() : dealsSignedOutHTML());
       return;
     }
   }
@@ -146,7 +155,7 @@ async function loadMyDeals() {
     const list = result.result?.deals || result.deals || [];
     const activeDeals = list.filter((d) => DEAL_STATES.has(d.state));
     if (activeDeals.length === 0) {
-      body.innerHTML = walletConnected() ? dealsEmptyHTML() : dealsSignedOutHTML();
+      renderDealsBody(body, walletConnected() ? dealsEmptyHTML() : dealsSignedOutHTML());
       return;
     }
     const rows = [];
@@ -158,10 +167,10 @@ async function loadMyDeals() {
         rows.push(`<tr><td>${esc(d.seller ?? "")}</td><td>${esc(briefText(d))}</td><td>${priceTag(d.price)}</td><td><span class="pill ${DEAL_PILL[d.state] ?? "active"}">${esc(d.state)}</span></td><td class="sub">—</td><td><span class="sub">—</span></td></tr>`);
       }
     }
-    body.innerHTML = dealsTableHTML(rows);
+    renderDealsBody(body, dealsTableHTML(rows));
   } catch (err) {
     console.error("loadMyDeals: failed to fetch deals", err);
-    body.innerHTML = dealsErrorHTML(err.message || "Failed to load deals");
+    renderDealsBody(body, dealsErrorHTML(err.message || "Failed to load deals"));
   }
 }
 
@@ -495,3 +504,9 @@ async function connectWallet() {
 
 loadMyDeals();
 fillBuyerBalance();
+
+if (document.getElementById("my-deals-body")) {
+  setInterval(() => {
+    loadMyDeals().catch(() => {});
+  }, 3000);
+}
