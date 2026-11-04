@@ -113,7 +113,7 @@ function dealsTableHTML(rows) {
 }
 
 function dealsEmptyHTML() {
-  return `<div class="deals-empty"><svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="6" y="14" width="32" height="20" rx="4" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5 4"/><path d="M6 20h32" stroke="#94A3B8" stroke-width="2"/><circle cx="22" cy="29" r="3" stroke="#EA580C" stroke-width="2"/></svg><p>No active orders. Go to the Marketplace to hire an agent.</p><p><a href="/marketplace"><button class="btn" type="button">Browse agents →</button></a></p></div>`;
+  return `<div class="deals-empty"><svg width="44" height="44" viewBox="0 0 44 44" fill="none" aria-hidden="true"><rect x="6" y="14" width="32" height="20" rx="4" stroke="#94A3B8" stroke-width="2" stroke-dasharray="5 4"/><path d="M6 20h32" stroke="#94A3B8" stroke-width="2"/><circle cx="22" cy="29" r="3" stroke="#EA580C" stroke-width="2"/></svg><p>No active deals. Browse the marketplace to hire an agent.</p><p><a href="/marketplace"><button class="btn" type="button">Browse agents →</button></a></p></div>`;
 }
 
 function dealsSignedOutHTML() {
@@ -125,8 +125,8 @@ function dealsErrorHTML(message) {
 }
 
 async function loadMyDeals() {
-  const body = $("my-deals-body");
-  if (body === null) return;
+  const body = document.getElementById("my-deals-body");
+  if (!body) return;
   if (justDisconnected()) {
     body.innerHTML = dealsSignedOutHTML();
     return;
@@ -135,33 +135,34 @@ async function loadMyDeals() {
   if (buyer === null) {
     try {
       buyer = await ensureBuyer();
-    } catch {
-      body.innerHTML = dealsEmptyHTML();
+    } catch (err) {
+      console.error("loadMyDeals: could not provision buyer", err);
+      body.innerHTML = walletConnected() ? dealsEmptyHTML() : dealsSignedOutHTML();
       return;
     }
   }
-  let deals = [];
   try {
-    const data = await apiGet("/api/deals?limit=100", buyer.key);
-    deals = (data.result.deals ?? []).filter((d) => DEAL_STATES.has(d.state));
-  } catch (err) {
-    body.innerHTML = dealsErrorHTML(err.message ?? String(err));
-    return;
-  }
-  if (deals.length === 0) {
-    body.innerHTML = dealsEmptyHTML();
-    return;
-  }
-  const rows = [];
-  for (const d of deals) {
-    try {
-      const detail = await apiGet(`/api/deals/${encodeURIComponent(d.id)}`, buyer.key);
-      rows.push(dealRowHTML({ deal: { ...detail.result.deal, created_at: d.created_at ?? detail.result.deal.created_at }, waitingOn: detail.waitingOn, allowedMoves: detail.allowedMoves }));
-    } catch {
-      rows.push(`<tr><td>${esc(d.seller ?? "")}</td><td>${esc(briefText(d))}</td><td>${priceTag(d.price)}</td><td><span class="pill ${DEAL_PILL[d.state] ?? "active"}">${esc(d.state)}</span></td><td class="sub">—</td><td><span class="sub">—</span></td></tr>`);
+    const result = await apiGet("/api/deals?limit=100", buyer.key);
+    const list = result.result?.deals || result.deals || [];
+    const activeDeals = list.filter((d) => DEAL_STATES.has(d.state));
+    if (activeDeals.length === 0) {
+      body.innerHTML = walletConnected() ? dealsEmptyHTML() : dealsSignedOutHTML();
+      return;
     }
+    const rows = [];
+    for (const d of activeDeals) {
+      try {
+        const detail = await apiGet(`/api/deals/${encodeURIComponent(d.id)}`, buyer.key);
+        rows.push(dealRowHTML({ deal: { ...detail.result.deal, created_at: d.created_at ?? detail.result.deal.created_at }, waitingOn: detail.waitingOn, allowedMoves: detail.allowedMoves }));
+      } catch {
+        rows.push(`<tr><td>${esc(d.seller ?? "")}</td><td>${esc(briefText(d))}</td><td>${priceTag(d.price)}</td><td><span class="pill ${DEAL_PILL[d.state] ?? "active"}">${esc(d.state)}</span></td><td class="sub">—</td><td><span class="sub">—</span></td></tr>`);
+      }
+    }
+    body.innerHTML = dealsTableHTML(rows);
+  } catch (err) {
+    console.error("loadMyDeals: failed to fetch deals", err);
+    body.innerHTML = dealsErrorHTML(err.message || "Failed to load deals");
   }
-  body.innerHTML = dealsTableHTML(rows);
 }
 
 async function viewDeal(id) {

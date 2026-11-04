@@ -1039,6 +1039,7 @@ body.seller #new-listing-btn { background: var(--indigo); }
 body.landing {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   color: var(--meta-text);
+  overflow-x: clip;
 }
 
 /* Full-width centered hero over a soft Meta-blue radial wash. */
@@ -1046,6 +1047,14 @@ body.landing {
   text-align: center;
   padding: 96px 20px 80px;
   background: radial-gradient(ellipse 80% 70% at 50% 30%, var(--meta-bg-blue) 0%, #ffffff 70%);
+  /* Full-bleed: escape the centered main container without moving the text. */
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  right: 50%;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  box-sizing: border-box;
 }
 .meta-eyebrow {
   display: inline-block;
@@ -1058,12 +1067,13 @@ body.landing {
 }
 .meta-hero h1 {
   font-size: 3.5rem;
-  font-weight: 600;
+  font-weight: 800;
   line-height: 1.1;
   letter-spacing: -0.02em;
   margin: 0 auto 20px;
   max-width: 16ch;
   color: var(--meta-text);
+  text-align: center;
 }
 .meta-sub {
   font-size: 1.25rem;
@@ -1072,7 +1082,7 @@ body.landing {
   max-width: 44ch;
   margin: 0 auto 36px;
 }
-.meta-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+.meta-cta { display: flex; gap: 12px; justify-content: center; align-items: center; flex-wrap: wrap; text-align: center; margin-left: auto; margin-right: auto; }
 .btn-outline {
   background: transparent;
   color: var(--meta-blue);
